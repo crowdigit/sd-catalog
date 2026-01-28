@@ -1,0 +1,276 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+
+	"github.com/gin-gonic/gin"
+	_ "github.com/mattn/go-sqlite3"
+)
+
+type Lora struct {
+	Name        string
+	Url         string
+	UrlPreview  []byte
+	Version     string
+	Filename    string
+	PromptLists [][]string
+	Tags        []string
+}
+
+func insertLoraRow(db *sql.DB, lora Lora) error {
+	stmt := `INSERT INTO loras ( name, url, urlpreview, version, filename ) VALUES ( ?, ?, ?, ?, ? )`
+	result, err := db.Exec(stmt, lora.Name, lora.Url, lora.UrlPreview, lora.Version, lora.Filename)
+	if err != nil {
+		return fmt.Errorf("failed to execute insert lora statement: %w", err)
+	}
+
+	loraId, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get inserted lora row id: %w", err)
+	}
+
+	promptListStmt := `INSERT INTO promptLists ( loraId, promptListId ) VALUES ( ?, ? )`
+	promptStmt  := `INSERT INTO prompts ( loraId, promptListId, seq, prompt ) VALUES ( ?, ?, ?, ? )`
+	for promptListIndex, promptList := range lora.PromptLists {
+		if _, err := db.Exec(promptListStmt, loraId, promptListIndex + 1); err != nil {
+			return fmt.Errorf("failed to execute insert prompt list statement: %w", err)
+		}
+		for promptIndex, prompt := range promptList {
+			if _, err := db.Exec(promptStmt, loraId, promptListIndex + 1, promptIndex + 1, prompt); err != nil {
+				return fmt.Errorf("failed to execute insert prompt statement: %w", err)
+			}
+		}
+	}
+
+	tagsStmt := `INSERT INTO tags ( loraId, tag ) VALUES ( ?, ? )`
+	for _, tag := range lora.Tags {
+		if _, err := db.Exec(tagsStmt, loraId, tag); err != nil {
+			return fmt.Errorf("failed to execute insert tag statement: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func insertSampleImage(db *sql.DB, loraId string, promptlistId string, sampleType int, sampleImage []byte) error {
+	stmt := `INSERT INTO sampleImages ( loraId, promptlistId, sampleType, sampleImage ) VALUES ( ?, ?, ?, ? )`
+	_, err := db.Exec(stmt, loraId, promptlistId, sampleType, sampleImage)
+	if err != nil {
+		return fmt.Errorf("failed to execute insert sample image statement: %w", err)
+	}
+	return nil
+}
+
+func initDB(db *sql.DB) error {
+	stmt1 := `CREATE TABLE IF NOT EXISTS
+loras (
+    loraId INTEGER PRIMARY KEY ASC AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    urlpreview BLOB NOT NULL,
+    version TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    UNIQUE ( url, version ) ON CONFLICT FAIL,
+    UNIQUE ( filename ) ON CONFLICT FAIL
+)`
+	if _, err := db.Exec(stmt1); err != nil {
+		return fmt.Errorf("failed to execute create loras table statement: %w", err)
+	}
+
+	stmt2 := `CREATE TABLE IF NOT EXISTS
+promptLists (
+    loraId REFERENCES loras ( loraId ) ON DELETE CASCADE,
+    promptListId INTEGER NOT NULL,
+    UNIQUE ( loraId, promptListId ) ON CONFLICT FAIL
+)`
+	if _, err := db.Exec(stmt2); err != nil {
+		return fmt.Errorf("failed to execute create prompt lists table statement: %w", err)
+	}
+
+	stmt3 := `CREATE TABLE IF NOT EXISTS
+prompts (
+    loraId INTEGER NOT NULL,
+    promptListId INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    FOREIGN KEY ( loraId, promptListId ) REFERENCES promptLists ( loraId, promptListId ) ON DELETE CASCADE,
+    UNIQUE ( loraId, promptListId, seq ) ON CONFLICT FAIL
+)`
+	if _, err := db.Exec(stmt3); err != nil {
+		return fmt.Errorf("failed to execute create prompts table statement: %w", err)
+	}
+
+	stmt4 := `CREATE TABLE IF NOT EXISTS
+tags (
+    loraId INTEGER REFERENCES loras ( loraId ) ON DELETE CASCADE,
+    tag TEXT NOT NULL,
+    UNIQUE ( loraId, tag ) ON CONFLICT IGNORE
+)`
+	if _, err := db.Exec(stmt4); err != nil {
+		return fmt.Errorf("failed to execute create tags table statement: %w", err)
+	}
+
+	stmt5 := `CREATE TABLE IF NOT EXISTS
+sampleImages (
+    loraId INTEGER NOT NULL,
+    promptListId INTEGER NOT NULL,
+    sampleType INTEGER NOT NULL,
+    sampleImage BLOB NOT NULL,
+    FOREIGN KEY ( loraId, promptListId ) REFERENCES promptLists ( loraId, promptListId ) ON DELETE CASCADE,
+    UNIQUE ( loraId, promptListId, sampleType ) ON CONFLICT REPLACE
+)`
+	if _, err := db.Exec(stmt5); err != nil {
+		return fmt.Errorf("failed to execute create sample images table statement: %w", err)
+	}
+	return nil
+}
+
+//go:embed submit-lora.html
+var s string
+
+type PostLoraForm struct {
+	Title    string `form:"title"`
+	URL      string `form:"url"`
+	Version  string `form:"version"`
+	Filename string `form:"filename"`
+	Prompts  string `form:"prompts"`
+}
+
+func (f PostLoraForm) Coalesce(urlpreview []byte) (Lora, error) {
+	prompts := make([][]string, 0)
+	if err := json.Unmarshal([]byte(f.Prompts), &prompts); err != nil {
+		return Lora{}, fmt.Errorf("failed to unmarshal prompts JSON string into array: %v", err)
+	}
+	return Lora{
+		Name:        f.Title,
+		Url:         f.URL,
+		UrlPreview:  urlpreview,
+		Version:     f.Version,
+		Filename:    f.Filename,
+		PromptLists: prompts,
+		Tags:        nil,
+	}, nil
+}
+
+func main() {
+	db, err := sql.Open("sqlite3", "./test.db")
+	if err != nil {
+		log.Fatalf("failed to open DB file: %v", err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		log.Fatalf("failed to create DB: %v", err)
+	}
+
+	router := gin.Default()
+	router.GET("/", func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, s)
+	})
+
+	router.POST("/api/lora", func(ctx *gin.Context) {
+		var postLoraForm PostLoraForm
+		if err := ctx.Bind(&postLoraForm); err != nil {
+			log.Printf("failed to bind post lora form: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		urlpreviewHeader, err := ctx.FormFile("urlpreview")
+		if err != nil {
+			log.Printf("failed to get urlpreview file from post lora form: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		urlpreviewFile, err := urlpreviewHeader.Open()
+		if err != nil {
+			log.Printf("failed to open urlpreview file from post lora form: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		defer urlpreviewFile.Close()
+		urlpreview, err := io.ReadAll(urlpreviewFile)
+		if err != nil {
+			log.Printf("failed to read urlpreview file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		lora, err := postLoraForm.Coalesce(urlpreview)
+		if err != nil {
+			log.Printf("failed to coalesce post lora form: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if err := insertLoraRow(db, lora); err != nil {
+			log.Printf("failed to insert new lora row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		ctx.Status(http.StatusOK)
+	})
+
+	router.PUT("/api/lora/:loraId/sampleImage/:promptlistId/:sampleType", func(ctx *gin.Context) {
+		loraId := ctx.Param("loraId")
+		promptlistId := ctx.Param("promptlistId")
+		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
+		if err != nil {
+			log.Printf("failed to convert sample type parameter into integer: %v\n", err)
+		}
+		sampleImageHeader, err := ctx.FormFile("sampleimage")
+		if err != nil {
+			log.Printf("failed to get sampleimage file from post sample image form: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		sampleImageFile, err := sampleImageHeader.Open()
+		if err != nil {
+			log.Printf("failed to open sampleimage file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		defer sampleImageFile.Close()
+		sampleImage, err := io.ReadAll(sampleImageFile)
+		if err != nil {
+			log.Printf("failed to read sampleimage file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if err := insertSampleImage(db, loraId, promptlistId, sampleType, sampleImage); err != nil {
+			log.Printf("failed to insert new sample image row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		ctx.Status(http.StatusOK)
+	})
+
+	server := &http.Server{
+		Addr:    "127.0.0.1:8080",
+		Handler: router.Handler(),
+	}
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("error returned while listening and serving HTTP server: %v", err)
+		}
+	}()
+
+	chInterruptNotify := make(chan os.Signal, 1)
+	signal.Notify(chInterruptNotify, syscall.SIGINT, syscall.SIGTERM)
+	<-chInterruptNotify
+
+	ctx := context.Background()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("error returned while waiting for HTTP server shutdown: %v", err)
+	}
+}

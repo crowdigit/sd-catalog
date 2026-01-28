@@ -1,0 +1,146 @@
+<html>
+  <head>
+    <title>Stable Diffusion Catalog</title>
+    <script>
+      function addPromptlistItem(ol) {
+	  const promptlistItems = ol.querySelectorAll(".submit-lora-promptlist-item");
+	  const lastItem = promptlistItems[promptlistItems.length - 1];
+	  const newItem = document.createElement("li")
+	  newItem.className = "submit-lora-promptlist-item";
+	  newItem.id = "submit-lora-promptlist-item-" + (promptlistItems.length + 1);
+	  initPromptlistPromptItem(newItem);
+	  if (lastItem) lastItem.after(newItem);
+	  else ol.prepend(newItem);
+      }
+      function initPromptlistAddButton(ol) {
+	  const button = document.createElement("button");
+	  button.type = "button";
+	  button.addEventListener('click', (event) => {
+	      addPromptlistItem(event.target.parentElement);
+	  });
+	  button.textContent = "Add";
+	  ol.appendChild(button);
+      }
+      function initPromptlistRemoveButton(ol) {
+	  const button = document.createElement("button");
+	  button.type = "button";
+	  button.addEventListener('click', (event) => {
+	      const promptlistItems = event.target.parentElement.querySelectorAll(".submit-lora-promptlist-item");
+	      if (promptlistItems.length === 0) return;
+	      promptlistItems[promptlistItems.length - 1].remove();
+	  });
+	  button.textContent = "Remove";
+	  ol.appendChild(button);
+      }
+      function addPromptlistPromptItem(ol) {
+	  const promptlistId = ol.parentElement.id;
+	  const promptlistIndex = parseInt(promptlistId.substring(promptlistId.lastIndexOf("-") + 1));
+	  const prompts = ol.querySelectorAll(".submit-lora-promptlist-prompt-item");
+	  const lastItem = prompts[prompts.length - 1];
+	  const newItem = document.createElement("li");
+	  newItem.className = "submit-lora-promptlist-prompt-item";
+	  const input = document.createElement("input");
+	  input.type = "text";
+	  input.placeholder = "prompt";
+	  input.name = `prompt-${promptlistIndex}-${prompts.length + 1}`;
+	  newItem.appendChild(input);
+	  if (lastItem) lastItem.after(newItem);
+	  else ol.prepend(newItem);
+      }
+      function initPromptlistPromptItem(li) {
+	  const list = document.createElement("ol");
+	  const addButton = document.createElement("button");
+	  addButton.type = "button";
+	  addButton.addEventListener('click', (event) => {
+	      addPromptlistPromptItem(event.target.parentElement);
+	  });
+	  addButton.textContent = "Add";
+	  const removeButton = document.createElement("button");
+	  removeButton.id = "submit-lora-promptlist-1-removebutton";
+	  removeButton.type = "button";
+	  removeButton.addEventListener('click', (event) => {
+	      const prompts = event.target.parentElement.querySelectorAll(".submit-lora-promptlist-prompt-item");
+	      if (prompts.length === 0) return;
+	      prompts[prompts.length - 1].remove();
+	  });
+	  removeButton.textContent = "Remove";
+	  list.appendChild(addButton);
+	  list.appendChild(removeButton);
+	  li.appendChild(list);
+      }
+      function initSubmitLoraForm(form, fileInput) {
+	  window.addEventListener('paste', (event) => {
+	      fileInput.files = event.clipboardData.files;
+	  });
+	  form.onsubmit = () => {
+	      const formData = new FormData(form);
+	      const [otherKeys, promptKeys] = formData.keys().reduce(([otherKeys, promptKeys], key) => {
+		  if (key.startsWith("prompt-")) promptKeys.push(key);
+		  else otherKeys.push(key);
+		  return [otherKeys, promptKeys];
+	      }, [[], []]);
+
+	      const prompts = promptKeys.reduce(
+		  (acc, promptKey) => {
+		      const secondSepIndex = promptKey.lastIndexOf("-");
+		      const promptlistIndex = parseInt(promptKey.substring(promptKey.indexOf("-") + 1, secondSepIndex)) - 1;
+		      const promptlist = acc[promptlistIndex] ?? [];
+		      const promptlistPromptIndex = parseInt(promptKey.substring(secondSepIndex + 1)) - 1;
+		      promptlist[promptlistPromptIndex] = formData.get(promptKey);
+		      acc[promptlistIndex] = promptlist;
+		      return acc;
+		  },
+		  [],
+	      );
+	      if (formData.get("emptyprompt"))
+		  prompts.unshift([]);
+
+	      const formDataCoalesced = new FormData();
+	      for (const key of otherKeys)
+		  formDataCoalesced.set(key, formData.get(key));
+	      formDataCoalesced.set("prompts", JSON.stringify(prompts));
+
+	      const xhr = new XMLHttpRequest();
+	      xhr.open("POST", "/api/lora");
+	      xhr.send(formDataCoalesced);
+	      xhr.onreadystatechange = () => {
+		  if (xhr.readyState == XMLHttpRequest.DONE) {
+		      if (xhr.status >= 200 && xhr.status < 300) {
+			  alert("Lora Successfully Submitted");
+			  form.reset();
+		      }
+		      else {
+			  alert("Failed to submit Lora");
+		      }
+		  }
+	      }
+	      return false;
+	  }
+      }
+    </script>
+  </head>
+  <body>
+    <h1>Submit New LoRA</h1>
+    <form id="submit-lora-form">
+      <label>Title</label> <input type="text" required id="submit-lora-title" name="title" placeholder="Title"><br>
+      <label>URL</label> <input type="URL" required id="submit-lora-url" name="url" placeholder="https://civitai.com/..."><br>
+      <label>URL Preview</label> <input type="file" required id="submit-lora-urlpreview" name="urlpreview" ><br>
+      <label>Version</label> <input type="text" required id="submit-lora-version" name="version" placeholder="Version"><br>
+      <label>Filename</label> <input type="text" requred pattern=".+\.safetensors" name="filename" id="submit-lora-filename" placeholder="foo.safetensors"><br>
+      <label>Prompts</label>
+      <ol id="submit-lora-promptlist"></ol>
+      <label>Include empty prompt</label> <input type="checkbox" id="submit-lora-emptyprompt" name="emptyprompt"><br>
+      <input id="submit-lora-submitbutton" type="submit" value="Submit">
+    </form>
+    <script>
+      (() => {
+	  const promptlist = document.querySelector("#submit-lora-promptlist");
+	  initPromptlistAddButton(promptlist);
+	  initPromptlistRemoveButton(promptlist);
+	  const submitLoraForm = document.querySelector("#submit-lora-form");
+	  const fileInput = document.querySelector("#submit-lora-urlpreview");
+	  initSubmitLoraForm(submitLoraForm, fileInput);
+      })();
+    </script>
+  </body>
+</html>
