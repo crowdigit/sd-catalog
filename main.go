@@ -162,7 +162,13 @@ sampleImages (
 }
 
 //go:embed submit-lora.html
-var s string
+var submitLoraHtml string
+
+//go:embed submit-checkpoint.html
+var submitCheckpointHtml string
+
+//go:embed index.html
+var indexHtml string
 
 type PostLoraForm struct {
 	Title    string `form:"title"`
@@ -200,9 +206,20 @@ func main() {
 	}
 
 	router := gin.Default()
+
 	router.GET("/", func(ctx *gin.Context) {
 		ctx.Header("Content-Type", "text/html")
-		ctx.String(http.StatusOK, s)
+		ctx.String(http.StatusOK, indexHtml)
+	})
+
+	router.GET("/submit-lora", func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, submitLoraHtml)
+	})
+
+	router.GET("/submit-checkpoint", func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, submitCheckpointHtml)
 	})
 
 	router.POST("/api/lora", func(ctx *gin.Context) {
@@ -283,6 +300,7 @@ func main() {
 		filename := ctx.Param("filename")
 		name := ctx.Query("name")
 		version := ctx.Query("version")
+		log.Printf("%s %s %s\n", filename, name, version)
 		if err := insertCheckpoint(db, filename, name, version); err != nil {
 			log.Printf("failed to insert checkpoint row: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)

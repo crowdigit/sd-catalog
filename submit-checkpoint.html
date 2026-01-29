@@ -1,0 +1,50 @@
+<html>
+  <head>
+    <title>Submit New Checkpoint</title>
+    <script>
+      function initSubmitCheckpointForm(form) {
+	  form.onsubmit = () => {
+	      const formData = new FormData(form);
+	      const checkpointFilename = formData.get("checkpointFilename");
+
+	      const url = new URL(`/api/checkpoint/${checkpointFilename}`, location.origin);
+	      url.searchParams.append("name", formData.get("name"));
+	      url.searchParams.append("version", formData.get("version"));
+
+	      fetch(url, { method: "PUT" }).then(
+		  (response) => {
+		      if (response.ok) {
+			  alert("Checkpoint successfully submitted");
+			  form.reset();
+		      }
+		      else {
+			  alert("Failed to submit checkpoint");
+		      }
+		  },
+		  () => {
+		      alert("An error occured while requesting");
+		  }
+	      );
+
+	      return false;
+	  }
+      }
+    </script>
+  </head>
+  <body>
+    <a href="/">[Top]</a>
+    <h1>Submit New Checkpoint</h1>
+    <form id="submit-checkpoint-form">
+      <label>Filename</label> <input type="text" required id="submit-checkpoint-filename" name="checkpointFilename" placeholder="asdf.safetensors" pattern=".+\.safetensors"></br>
+      <label>Name</label> <input type="text" required id="submit-checkpoint-name" name="name" placeholder="name"></br>
+      <label>Version</label> <input type="text" required id="submit-checkpoint-version" name="version" placeholder="version"></br>
+      <input id="submit-checkpoint-submitbutton" type="submit" value="Submit"></br>
+    </form>
+    <script>
+      (() => {
+	  const submitCheckpointForm = document.querySelector("#submit-checkpoint-form");
+	  initSubmitCheckpointForm(submitCheckpointForm);
+      })();
+    </script>
+  </body>
+</html>
