@@ -70,7 +70,10 @@
       }
       function initSubmitLoraForm(form, fileInput) {
 	  window.addEventListener('paste', (event) => {
-	      fileInput.files = event.clipboardData.files;
+	      if (event.clipboardData.types[0] === "Files") {
+		  fileInput.files = event.clipboardData.files;
+		  event.preventDefault();
+	      }
 	  });
 	  form.onsubmit = () => {
 	      const formData = new FormData(form);
