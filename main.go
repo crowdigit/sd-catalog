@@ -72,6 +72,15 @@ func insertSampleImage(db *sql.DB, loraId string, promptlistId string, sampleTyp
 	return nil
 }
 
+func insertCheckpoint(db *sql.DB, checkpointFilename string, name string, version string) error {
+	stmt := `INSERT INTO checkpoints ( checkpointFilename, name, version ) VALUES ( ?, ?, ? )`
+	_, err := db.Exec(stmt, checkpointFilename, name, version)
+	if err != nil {
+		return fmt.Errorf("failed to insert checkpoint row: %w", err)
+	}
+	return nil
+}
+
 func initDB(db *sql.DB) error {
 	stmt1 := `CREATE TABLE IF NOT EXISTS
 loras (
@@ -82,7 +91,8 @@ loras (
     version TEXT NOT NULL,
     filename TEXT NOT NULL,
     UNIQUE ( url, version ) ON CONFLICT FAIL,
-    UNIQUE ( filename ) ON CONFLICT FAIL
+    UNIQUE ( filename ) ON CONFLICT FAIL,
+    CHECK ( version <> "" AND filename <> "")
 )`
 	if _, err := db.Exec(stmt1); err != nil {
 		return fmt.Errorf("failed to execute create loras table statement: %w", err)
@@ -105,7 +115,8 @@ prompts (
     seq INTEGER NOT NULL,
     prompt TEXT NOT NULL,
     FOREIGN KEY ( loraId, promptListId ) REFERENCES promptLists ( loraId, promptListId ) ON DELETE CASCADE,
-    UNIQUE ( loraId, promptListId, seq ) ON CONFLICT FAIL
+    UNIQUE ( loraId, promptListId, seq ) ON CONFLICT FAIL,
+    CHECK ( prompt <> "")
 )`
 	if _, err := db.Exec(stmt3); err != nil {
 		return fmt.Errorf("failed to execute create prompts table statement: %w", err)
@@ -115,22 +126,36 @@ prompts (
 tags (
     loraId INTEGER REFERENCES loras ( loraId ) ON DELETE CASCADE,
     tag TEXT NOT NULL,
-    UNIQUE ( loraId, tag ) ON CONFLICT IGNORE
+    UNIQUE ( loraId, tag ) ON CONFLICT IGNORE,
+    CHECK ( tag <> "")
 )`
 	if _, err := db.Exec(stmt4); err != nil {
 		return fmt.Errorf("failed to execute create tags table statement: %w", err)
 	}
 
 	stmt5 := `CREATE TABLE IF NOT EXISTS
+checkpoints (
+    checkpointFilename TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
+    CHECK ( checkpointFilename <> "" AND name <> "" AND version <> "")
+)`
+	if _, err := db.Exec(stmt5); err != nil {
+		return fmt.Errorf("failed to create checkpoint table: %w", err)
+	}
+
+	stmt6 := `CREATE TABLE IF NOT EXISTS
 sampleImages (
     loraId INTEGER NOT NULL,
     promptListId INTEGER NOT NULL,
+    checkpointFilename TEXT NOT NULL,
     sampleType INTEGER NOT NULL,
     sampleImage BLOB NOT NULL,
     FOREIGN KEY ( loraId, promptListId ) REFERENCES promptLists ( loraId, promptListId ) ON DELETE CASCADE,
+    FOREIGN KEY ( checkpointFilename ) REFERENCES checkpoints ( checkpointFilename ) ON DELETE CASCADE,
     UNIQUE ( loraId, promptListId, sampleType ) ON CONFLICT REPLACE
 )`
-	if _, err := db.Exec(stmt5); err != nil {
+	if _, err := db.Exec(stmt6); err != nil {
 		return fmt.Errorf("failed to execute create sample images table statement: %w", err)
 	}
 	return nil
@@ -248,6 +273,18 @@ func main() {
 		}
 		if err := insertSampleImage(db, loraId, promptlistId, sampleType, sampleImage); err != nil {
 			log.Printf("failed to insert new sample image row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		ctx.Status(http.StatusOK)
+	})
+
+	router.PUT("/api/checkpoint/:filename", func(ctx *gin.Context) {
+		filename := ctx.Param("filename")
+		name := ctx.Query("name")
+		version := ctx.Query("version")
+		if err := insertCheckpoint(db, filename, name, version); err != nil {
+			log.Printf("failed to insert checkpoint row: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
