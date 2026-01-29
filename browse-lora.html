@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Browse LoRA</title>
+  <script>
+    function addCatalogEntry(div, loraId, name, version) {
+      const titleElem = document.createElement("h2");
+      titleElem.textContent = `${name} - ${version}`;
+      div.appendChild(titleElem);
+
+      const civitaiPreview = document.createElement("img");
+      civitaiPreview.style = "width: 100%;";
+      const civitaiPreviewUrl = new URL(`/api/lora/${loraId}/preview`, location.origin);
+      civitaiPreview.src = civitaiPreviewUrl;
+      div.appendChild(civitaiPreview);
+    }
+
+    function gotoPage(targetPage) {
+      const targetUrl = new URL(location.href);
+      targetUrl.searchParams.set('page', targetPage.toString());
+      location.href = targetUrl;
+    }
+  </script>
+</head>
+<body>
+  <h1>Browse LoRA</h1>
+  <div style="position: fixed;" id="browse-control-div">
+    <input id="browse-lora-page-input" type="number">
+    <p id="browse-lora-maxpage-indic" style="display: inline;"></p>
+    <button id="browse-lora-gobutton" type="button">Go</button><br>
+  </div>
+  <div style="width: 50%; margin: auto;" id="browse-lora-catalog"></div>
+  <script>
+    (async () => {
+      const fetchPageUrl = new URL("/api/browse", location.origin);
+      const response = await fetch(fetchPageUrl);
+      if (!response.ok) {
+        alert("failed to fetch page data");
+        return;
+      }
+      const { maxPage } = await response.json();
+      const maxPageIndic = document.querySelector("#browse-lora-maxpage-indic");
+      const pageInput = document.querySelector("#browse-lora-page-input");
+      const searchParams = new URL(location.href).searchParams;
+      const currentPage = parseInt(searchParams.get("page") ?? "0");
+
+      maxPageIndic.textContent = `of ${maxPage}`;
+      pageInput.value = currentPage;
+
+      const goButton = document.querySelector("#browse-lora-gobutton");
+      goButton.onclick = () => { gotoPage(targetPage); };
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowLeft") {
+          const target = Math.max(0, currentPage - 1);
+          if (currentPage !== target)
+            gotoPage(target);
+        } else if (event.key === "ArrowRight") {
+          const target = Math.min(maxPage, currentPage + 1);
+          if (currentPage !== target)
+            gotoPage(target);
+        }
+      })
+
+      const browseResp = await fetch(new URL(`/api/browse/${currentPage}`, location.origin));
+      if (!browseResp.ok) {
+        alert("failed to fetch browse data");
+        return;
+      }
+      const { loraIds, names, versions } = await browseResp.json();
+      const catalogDiv = document.querySelector("#browse-lora-catalog");
+      for (let i = 0; i < loraIds.length; i += 1) {
+        addCatalogEntry(catalogDiv, loraIds[i], names[i], versions[i]);
+      }
+    })();
+  </script>
+</body>
+</html>

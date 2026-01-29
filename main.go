@@ -174,6 +174,12 @@ var submitCheckpointHtml string
 //go:embed index.html
 var indexHtml string
 
+//go:embed browse-lora.html
+var browseLoraHtml string
+
+//go:embed lora.html
+var loraHtml string
+
 type PostLoraForm struct {
 	Title    string `form:"title"`
 	URL      string `form:"url"`
@@ -224,6 +230,147 @@ func main() {
 	router.GET("/submit-checkpoint", func(ctx *gin.Context) {
 		ctx.Header("Content-Type", "text/html")
 		ctx.String(http.StatusOK, submitCheckpointHtml)
+	})
+
+	router.GET("/browse-lora", func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, browseLoraHtml)
+	})
+
+	router.GET("/lora/:loraId", func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, loraHtml)
+	})
+
+	limit := 5
+
+	router.GET("/api/browse", func(ctx *gin.Context) {
+		rows, err := db.Query("SELECT COUNT(*) AS num FROM loras")
+		if err != nil {
+			log.Printf("failed to select lora IDs: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		rows.Next()
+		var num int
+		if err := rows.Scan(&num); err != nil {
+			log.Printf("failed to scan lora ID from row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		response := struct {
+			MaxPage int `json:"maxPage"`
+		}{
+			MaxPage: (num - 1) / limit,
+		}
+		ctx.JSON(http.StatusOK, response)
+	})
+	router.GET("/api/browse/:page", func(ctx *gin.Context) {
+		page, err := strconv.Atoi(ctx.Param("page"))
+		if err != nil {
+			log.Printf("failed to parse page into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		offset := limit * page
+		rows, err := db.Query("SELECT loraId, name, version FROM loras ORDER BY loraId ASC LIMIT ? OFFSET ?", limit, offset)
+		if err != nil {
+			log.Printf("failed to select lora IDs: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		loraIds := make([]int, 0, limit)
+		names := make([]string, 0, limit)
+		versions := make([]string, 0, limit)
+		for rows.Next() {
+			var loraId int64
+			var name string
+			var version string
+			if err := rows.Scan(&loraId, &name, &version); err != nil {
+				log.Printf("failed to scan lora ID from row: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			loraIds = append(loraIds, int(loraId))
+			names = append(names, name)
+			versions = append(versions, version)
+		}
+		ctx.JSON(http.StatusOK, struct {
+			LoraIds  []int    `json:"loraIds"`
+			Names    []string `json:"names"`
+			Versions []string `json:"versions"`
+		}{
+			LoraIds:  loraIds,
+			Names:    names,
+			Versions: versions,
+		})
+	})
+
+	router.GET("/api/lora/:loraId", func(ctx *gin.Context) {
+		loraId, err := strconv.Atoi(ctx.Param("loraId"))
+		if err != nil {
+			log.Printf("failed to parse lora ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query("SELECT name, url, version, filename FROM loras WHERE loraId = ?", loraId)
+		if err != nil {
+			log.Printf("failed to select lora: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		if !rows.Next() {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+
+		lora := struct {
+			Name     string
+			Url      string
+			Version  string
+			Filename string
+		}{}
+		if err := rows.Scan(&lora.Name, &lora.Url, &lora.Version, &lora.Filename); err != nil {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			log.Printf("failed to scan lora from query result: %v\n", err)
+			return
+		}
+
+		ctx.Header("Cache-Control", "public, max-age=604800")
+		ctx.JSON(http.StatusOK, lora)
+	})
+
+	router.GET("/api/lora/:loraId/preview", func(ctx *gin.Context) {
+		loraId, err := strconv.Atoi(ctx.Param("loraId"))
+		if err != nil {
+			log.Printf("failed to parse lora ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query("SELECT urlpreview FROM loras WHERE loraId = ?", loraId)
+		if err != nil {
+			log.Printf("failed to select lora: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		if !rows.Next() {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+
+		var urlpreview []byte
+		if err := rows.Scan(&urlpreview); err != nil {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			log.Printf("failed to scan lora from query result: %v\n", err)
+			return
+		}
+
+		ctx.Header("Cache-Control", "public, max-age=604800")
+		ctx.Data(200, "image/png", urlpreview)
 	})
 
 	router.POST("/api/lora", func(ctx *gin.Context) {
@@ -335,7 +482,7 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:    "127.0.0.1:8080",
+		Addr:    "192.168.123.10:8080",
 		Handler: router.Handler(),
 	}
 

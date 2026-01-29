@@ -1,6 +1,6 @@
 module github.com/crowdigit/sd-catalog
 
-go 1.25.6
+go 1.25.5
 
 require (
 	github.com/bytedance/sonic v1.14.0 // indirect
