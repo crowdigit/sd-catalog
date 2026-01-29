@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -17,6 +18,9 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+var comfyUiEndpoint = "192.168.123.10:8081"
+var defaultCheckpoint = "waiSHUFFLENOOB_vPred04.safetensors"
 
 type Lora struct {
 	Name        string
@@ -28,27 +32,27 @@ type Lora struct {
 	Tags        []string
 }
 
-func insertLoraRow(db *sql.DB, lora Lora) error {
+func insertLoraRow(db *sql.DB, lora Lora) (int64, error) {
 	stmt := `INSERT INTO loras ( name, url, urlpreview, version, filename ) VALUES ( ?, ?, ?, ?, ? )`
 	result, err := db.Exec(stmt, lora.Name, lora.Url, lora.UrlPreview, lora.Version, lora.Filename)
 	if err != nil {
-		return fmt.Errorf("failed to execute insert lora statement: %w", err)
+		return 0, fmt.Errorf("failed to execute insert lora statement: %w", err)
 	}
 
 	loraId, err := result.LastInsertId()
 	if err != nil {
-		return fmt.Errorf("failed to get inserted lora row id: %w", err)
+		return 0, fmt.Errorf("failed to get inserted lora row id: %w", err)
 	}
 
 	promptListStmt := `INSERT INTO promptLists ( loraId, promptListId ) VALUES ( ?, ? )`
-	promptStmt  := `INSERT INTO prompts ( loraId, promptListId, seq, prompt ) VALUES ( ?, ?, ?, ? )`
+	promptStmt := `INSERT INTO prompts ( loraId, promptListId, seq, prompt ) VALUES ( ?, ?, ?, ? )`
 	for promptListIndex, promptList := range lora.PromptLists {
-		if _, err := db.Exec(promptListStmt, loraId, promptListIndex + 1); err != nil {
-			return fmt.Errorf("failed to execute insert prompt list statement: %w", err)
+		if _, err := db.Exec(promptListStmt, loraId, promptListIndex+1); err != nil {
+			return 0, fmt.Errorf("failed to execute insert prompt list statement: %w", err)
 		}
 		for promptIndex, prompt := range promptList {
-			if _, err := db.Exec(promptStmt, loraId, promptListIndex + 1, promptIndex + 1, prompt); err != nil {
-				return fmt.Errorf("failed to execute insert prompt statement: %w", err)
+			if _, err := db.Exec(promptStmt, loraId, promptListIndex+1, promptIndex+1, prompt); err != nil {
+				return 0, fmt.Errorf("failed to execute insert prompt statement: %w", err)
 			}
 		}
 	}
@@ -56,16 +60,16 @@ func insertLoraRow(db *sql.DB, lora Lora) error {
 	tagsStmt := `INSERT INTO tags ( loraId, tag ) VALUES ( ?, ? )`
 	for _, tag := range lora.Tags {
 		if _, err := db.Exec(tagsStmt, loraId, tag); err != nil {
-			return fmt.Errorf("failed to execute insert tag statement: %w", err)
+			return 0, fmt.Errorf("failed to execute insert tag statement: %w", err)
 		}
 	}
 
-	return nil
+	return loraId, nil
 }
 
-func insertSampleImage(db *sql.DB, loraId string, promptlistId string, sampleType int, sampleImage []byte) error {
-	stmt := `INSERT INTO sampleImages ( loraId, promptlistId, sampleType, sampleImage ) VALUES ( ?, ?, ?, ? )`
-	_, err := db.Exec(stmt, loraId, promptlistId, sampleType, sampleImage)
+func insertSampleImage(db *sql.DB, loraId string, promptlistId string, checkpointFilename string, sampleType int, sampleImage []byte) error {
+	stmt := `INSERT INTO sampleImages ( loraId, promptlistId, checkpointFilename, sampleType, sampleImage ) VALUES ( ?, ?, ?, ?, ? )`
+	_, err := db.Exec(stmt, loraId, promptlistId, checkpointFilename, sampleType, sampleImage)
 	if err != nil {
 		return fmt.Errorf("failed to execute insert sample image statement: %w", err)
 	}
@@ -153,7 +157,7 @@ sampleImages (
     sampleImage BLOB NOT NULL,
     FOREIGN KEY ( loraId, promptListId ) REFERENCES promptLists ( loraId, promptListId ) ON DELETE CASCADE,
     FOREIGN KEY ( checkpointFilename ) REFERENCES checkpoints ( checkpointFilename ) ON DELETE CASCADE,
-    UNIQUE ( loraId, promptListId, sampleType ) ON CONFLICT REPLACE
+    UNIQUE ( loraId, promptListId, checkpointFilename, sampleType ) ON CONFLICT REPLACE
 )`
 	if _, err := db.Exec(stmt6); err != nil {
 		return fmt.Errorf("failed to execute create sample images table statement: %w", err)
@@ -254,17 +258,38 @@ func main() {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		if err := insertLoraRow(db, lora); err != nil {
+		loraId, err := insertLoraRow(db, lora)
+		if err != nil {
 			log.Printf("failed to insert new lora row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		u := url.URL{
+			Scheme: "http",
+			Host:   comfyUiEndpoint,
+			Path:   "/api/queue",
+		}
+		q := u.Query()
+		q.Set("loraId", strconv.Itoa(int(loraId)))
+		q.Set("checkpointFilename", defaultCheckpoint)
+		u.RawQuery = q.Encode()
+		log.Println(u.String())
+		if resp, err := http.Post(u.String(), "", nil); err != nil {
+			log.Printf("failed to enqueue sample image: %v", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if resp.StatusCode < 200 || resp.StatusCode > 300 {
+			log.Printf("ComfyUI responded with status: %d", resp.StatusCode)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 		ctx.Status(http.StatusOK)
 	})
 
-	router.PUT("/api/lora/:loraId/sampleImage/:promptlistId/:sampleType", func(ctx *gin.Context) {
+	router.PUT("/api/lora/:loraId/sampleImage/:promptlistId/:checkpointFilename/:sampleType", func(ctx *gin.Context) {
 		loraId := ctx.Param("loraId")
 		promptlistId := ctx.Param("promptlistId")
+		checkpointFilename := ctx.Param("checkpointFilename")
 		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
 		if err != nil {
 			log.Printf("failed to convert sample type parameter into integer: %v\n", err)
@@ -288,7 +313,7 @@ func main() {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		if err := insertSampleImage(db, loraId, promptlistId, sampleType, sampleImage); err != nil {
+		if err := insertSampleImage(db, loraId, promptlistId, checkpointFilename, sampleType, sampleImage); err != nil {
 			log.Printf("failed to insert new sample image row: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
