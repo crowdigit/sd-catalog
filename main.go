@@ -220,6 +220,48 @@ func (f PostLoraForm) Coalesce(urlpreview []byte) (Lora, error) {
 	}, nil
 }
 
+func queryDefaultCheckpoint(db *sql.DB) (string, error) {
+	rows, err := db.Query("SELECT checkpointFilename FROM defaultCheckpoint LIMIT 1")
+	if err != nil {
+		return "", fmt.Errorf("failed to select from defaultCheckpoint: %w", err)
+	}
+	var defaultCheckpoint string
+	if !rows.Next() {
+		return "", fmt.Errorf("failed to scan default checkpoint: %w", err)
+	} else if err := rows.Scan(&defaultCheckpoint); err != nil {
+		return "", fmt.Errorf("failed to scan default checkpoint: %w", err)
+	}
+	return defaultCheckpoint, nil
+}
+
+func queryDefaultSampleType(db *sql.DB, _loraId int) (int, error) {
+	rows, err := db.Query("SELECT sampleType FROM defaultSampleType LIMIT 1")
+	if err != nil {
+		return 0, fmt.Errorf("failed to select from defaultSampleType: %w", err)
+	}
+	var defaultSampleType int
+	if !rows.Next() {
+		return 0, fmt.Errorf("failed to scan default sample type: %w", err)
+	} else if err := rows.Scan(&defaultSampleType); err != nil {
+		return 0, fmt.Errorf("failed to scan default sample type: %w", err)
+	}
+	return defaultSampleType, nil
+}
+
+func queryDefaultPromptListId(db *sql.DB, loraId int) (int, error) {
+	rows, err := db.Query("SELECT promptListId FROM promptLists ORDER BY promptListId ASC LIMIT 1")
+	if err != nil {
+		return 0, fmt.Errorf("failed to select from promptLists: %w", err)
+	}
+	var defaultPromptListId int
+	if !rows.Next() {
+		return 0, fmt.Errorf("failed to scan default prompt list ID: %w", err)
+	} else if rows.Scan(&defaultPromptListId); err != nil {
+		return 0, fmt.Errorf("failed to scan default prompt list ID: %w", err)
+	}
+	return defaultPromptListId, nil
+}
+
 func main() {
 	db, err := sql.Open("sqlite3", "./test.db")
 	if err != nil {
@@ -358,7 +400,7 @@ func main() {
 		ctx.JSON(http.StatusOK, lora)
 	})
 
-	router.GET("/api/lora/:loraId/preview", func(ctx *gin.Context) {
+	router.GET("/api/lora/:loraId/urlpreview", func(ctx *gin.Context) {
 		loraId, err := strconv.Atoi(ctx.Param("loraId"))
 		if err != nil {
 			log.Printf("failed to parse lora ID into integer: %v\n", err)
@@ -381,12 +423,67 @@ func main() {
 		var urlpreview []byte
 		if err := rows.Scan(&urlpreview); err != nil {
 			ctx.AbortWithStatus(http.StatusBadRequest)
-			log.Printf("failed to scan lora from query result: %v\n", err)
+			log.Printf("failed to scan urlpreview image from query result: %v\n", err)
 			return
 		}
 
 		ctx.Header("Cache-Control", "public, max-age=604800")
 		ctx.Data(200, "image/png", urlpreview)
+	})
+
+	router.GET("/api/lora/:loraId/preview", func(ctx *gin.Context) {
+		loraId, err := strconv.Atoi(ctx.Param("loraId"))
+		if err != nil {
+			log.Printf("failed to parse lora ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		defaultCheckpoint, err := queryDefaultCheckpoint(db)
+		if err != nil {
+			log.Printf("failed to query default checkpoint: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		defaultSampleType, err := queryDefaultSampleType(db, loraId)
+		if err != nil {
+			log.Printf("failed to query default sampe type: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		defaultPromptListId, err := queryDefaultPromptListId(db, loraId)
+		if err != nil {
+			log.Printf("failed to query default prompt list ID: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("loraId: %d\n", loraId)
+		log.Printf("promptListId: %d\n", defaultPromptListId)
+		log.Printf("checkpointFilename: %d\n", defaultCheckpoint)
+		log.Printf("sampleType: %d\n", defaultSampleType)
+
+		rows, err := db.Query("SELECT sampleImage FROM sampleImages WHERE loraId = ? AND promptListId = ? AND checkpointFilename = ? AND sampleType = ?", loraId, defaultPromptListId, defaultCheckpoint, defaultSampleType)
+		if err != nil {
+			log.Printf("failed to query default sample image: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if !rows.Next() {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		var image []byte
+		if err := rows.Scan(&image); err != nil {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			log.Printf("failed to scan sample image from query result: %v\n", err)
+			return
+		}
+
+		ctx.Header("Cache-Control", "public, max-age=604800")
+		ctx.Data(200, "image/png", image)
 	})
 
 	router.POST("/api/lora", func(ctx *gin.Context) {

@@ -9,11 +9,22 @@
       titleElem.textContent = `${name} - ${version}`;
       div.appendChild(titleElem);
 
+      const entryDiv = document.createElement("div");
+      entryDiv.style = "display: flex; justify-content: center;";
+
       const civitaiPreview = document.createElement("img");
-      civitaiPreview.style = "width: 100%;";
-      const civitaiPreviewUrl = new URL(`/api/lora/${loraId}/preview`, location.origin);
+      civitaiPreview.style = "width: 70%; height: 70%;";
+      const civitaiPreviewUrl = new URL(`/api/lora/${loraId}/urlpreview`, location.origin);
       civitaiPreview.src = civitaiPreviewUrl;
-      div.appendChild(civitaiPreview);
+      entryDiv.appendChild(civitaiPreview);
+
+      const loraPreview = document.createElement("img");
+      loraPreview.style = "width: 35%; height: 35%";
+      const loraPreviewUrl = new URL(`/api/lora/${loraId}/preview`, location.origin);
+      loraPreview.src = loraPreviewUrl;
+      entryDiv.appendChild(loraPreview);
+
+      div.appendChild(entryDiv);
     }
 
     function gotoPage(targetPage) {
@@ -24,6 +35,7 @@
   </script>
 </head>
 <body>
+  <a href="/">[Top]</a>
   <h1>Browse LoRA</h1>
   <div style="position: fixed;" id="browse-control-div">
     <input id="browse-lora-page-input" type="number">
