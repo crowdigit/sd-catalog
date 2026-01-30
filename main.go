@@ -263,7 +263,7 @@ func queryDefaultPromptListId(db *sql.DB, loraId int) (int, error) {
 }
 
 func main() {
-	db, err := sql.Open("sqlite3", "./test.db")
+	db, err := sql.Open("sqlite3", "./test.db?_busy_timeout=1000")
 	if err != nil {
 		log.Fatalf("failed to open DB file: %v", err)
 	}
@@ -423,10 +423,17 @@ func main() {
 		ctx.Data(200, "image/png", urlpreview)
 	})
 
-	router.GET("/api/lora/:loraId/preview", func(ctx *gin.Context) {
+	router.GET("/api/lora/:loraId/preview/:sampleType", func(ctx *gin.Context) {
 		loraId, err := strconv.Atoi(ctx.Param("loraId"))
 		if err != nil {
 			log.Printf("failed to parse lora ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
+		if err != nil {
+			log.Printf("failed to parse sample type into integer: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
@@ -438,12 +445,12 @@ func main() {
 			return
 		}
 
-		defaultSampleType, err := queryDefaultSampleType(db, loraId)
-		if err != nil {
-			log.Printf("failed to query default sampe type: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
+		// defaultSampleType, err := queryDefaultSampleType(db, loraId)
+		// if err != nil {
+		// 	log.Printf("failed to query default sampe type: %v\n", err)
+		// 	ctx.AbortWithStatus(http.StatusBadRequest)
+		// 	return
+		// }
 
 		defaultPromptListId, err := queryDefaultPromptListId(db, loraId)
 		if err != nil {
@@ -452,7 +459,7 @@ func main() {
 			return
 		}
 
-		rows, err := db.Query("SELECT sampleImage FROM sampleImages WHERE loraId = ? AND promptListId = ? AND checkpointFilename = ? AND sampleType = ?", loraId, defaultPromptListId, defaultCheckpoint, defaultSampleType)
+		rows, err := db.Query("SELECT sampleImage FROM sampleImages WHERE loraId = ? AND promptListId = ? AND checkpointFilename = ? AND sampleType = ?", loraId, defaultPromptListId, defaultCheckpoint, sampleType)
 		if err != nil {
 			log.Printf("failed to query default sample image: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
@@ -558,8 +565,10 @@ ORDER BY promptLists.promptListId ASC, prompts.seq ASC`
 		currentPromptListId := promptListIds[0]
 		currentPrompts := make([]string, 0, 3)
 		promptLists := make([][]string, 0, 1)
+		promptListIdsAggr := make([]int, 0, 3)
 		for i := 0; i < len(promptListIds); i += 1 {
 			if promptListIds[i] != currentPromptListId {
+				promptListIdsAggr = append(promptListIdsAggr, currentPromptListId)
 				promptLists = append(promptLists, currentPrompts)
 				currentPrompts = make([]string, 0, 3)
 				currentPromptListId = promptListIds[i]
@@ -570,11 +579,12 @@ ORDER BY promptLists.promptListId ASC, prompts.seq ASC`
 				currentPrompts = append(currentPrompts, prompts[i].String)
 			}
 		}
+		promptListIdsAggr = append(promptListIdsAggr, currentPromptListId)
 		promptLists = append(promptLists, currentPrompts)
 
 		ctx.JSON(http.StatusOK, gin.H{
 			"promptLists":   promptLists,
-			"promptListIds": promptListIds,
+			"promptListIds": promptListIdsAggr,
 		})
 	})
 
