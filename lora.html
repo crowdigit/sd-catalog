@@ -113,6 +113,23 @@
           });
         }
       }
+
+      document.addEventListener("keydown", async (event) => {
+        const left = event.key === "ArrowLeft";
+        if (left || event.key === "ArrowRight") {
+          const browseResp = await fetch(new URL(`/api/lora/${loraId}/browse`, location.origin));
+          if (!browseResp.ok) {
+            alert("failed to fetch browse data");
+            return;
+          }
+          const { prev, next } = await browseResp.json();
+          if (left) {
+            if (prev) location.href = new URL(`/lora/${prev}`, location.origin);
+          } else {
+            if (next) location.href = new URL(`/lora/${next}`, location.origin);
+          }
+        }
+      });
     })();
   </script>
 </body>

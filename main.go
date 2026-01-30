@@ -774,6 +774,64 @@ ORDER BY sampleType ASC`
 		})
 	})
 
+	router.GET("/api/lora/:loraId/browse", func(ctx *gin.Context) {
+		loraId, err := strconv.Atoi(ctx.Param("loraId"))
+		if err != nil {
+			log.Printf("failed to parse lora ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query(`SELECT prev, current_, next
+FROM (
+	SELECT
+		lag( loraId ) OVER ( ORDER BY loraId ) AS prev,
+		loraId AS current_,
+		LEAD( loraId ) OVER ( ORDER BY loraId ) AS next
+	FROM loras
+) WHERE current_ = ? LIMIT 1;`, loraId)
+		if err != nil {
+			log.Printf("failed to query lora browse data: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if !rows.Next() {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		var prev, current, next sql.NullInt64
+		if err := rows.Scan(&prev, &current, &next); err != nil {
+			log.Printf("failed to scan lora browse data: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		var prevCoale *int64
+		var currentCoale *int64
+		var nextCoale *int64
+
+		if prev.Valid {
+			prevCoale = &prev.Int64
+		} else {
+			prevCoale = nil
+		}
+		if current.Valid {
+			currentCoale = &current.Int64
+		} else {
+			currentCoale = nil
+		}
+		if next.Valid {
+			nextCoale = &next.Int64
+		} else {
+			nextCoale = nil
+		}
+		ctx.JSON(http.StatusOK, gin.H{
+			"prev":    prevCoale,
+			"current": currentCoale,
+			"next":    nextCoale,
+		})
+	})
+
 	server := &http.Server{
 		Addr:    "192.168.123.10:8080",
 		Handler: router.Handler(),
