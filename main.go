@@ -20,7 +20,6 @@ import (
 )
 
 var comfyUiEndpoint = "192.168.123.10:8081"
-var defaultCheckpoint = "waiSHUFFLENOOB_vPred04.safetensors"
 
 type Lora struct {
 	Name        string
@@ -161,6 +160,23 @@ sampleImages (
 )`
 	if _, err := db.Exec(stmt6); err != nil {
 		return fmt.Errorf("failed to execute create sample images table statement: %w", err)
+	}
+
+	stmt7 := `CREATE TABLE IF NOT EXISTS
+defaultCheckpoint (
+	checkpointFilename TEXT NOT NULL,
+	FOREIGN KEY ( checkpointFilename ) REFERENCES checkpoints ( checkpointFilename ) ON DELETE CASCADE
+)`
+	if _, err := db.Exec(stmt7); err != nil {
+		return fmt.Errorf("failed to create default checkpoint table: %v\n", err)
+	}
+
+	stmt8 := `CREATE TABLE IF NOT EXISTS
+defaultSampleType (
+	sampleType INTEGER NOT NULL
+)`
+	if _, err := db.Exec(stmt8); err != nil {
+		return fmt.Errorf("failed to create default sample type type: %v\n", err)
 	}
 	return nil
 }
@@ -415,6 +431,23 @@ func main() {
 			Scheme: "http",
 			Host:   comfyUiEndpoint,
 			Path:   "/api/queue",
+		}
+		rows, err := db.Query("SELECT checkpointFilename FROM defaultCheckpoint LIMIT 1")
+		if err != nil {
+			log.Printf("failed to query default checkpoint filename: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if !rows.Next() {
+			log.Printf("default checkpoint is not defined\n")
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		var defaultCheckpoint string
+		if err := rows.Scan(&defaultCheckpoint); err != nil {
+			log.Printf("failed to scan default checkpoint filename: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
 		}
 		q := u.Query()
 		q.Set("loraId", strconv.Itoa(int(loraId)))
