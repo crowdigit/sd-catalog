@@ -316,13 +316,9 @@ func main() {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		response := struct {
-			MaxPage int `json:"maxPage"`
-		}{
-			MaxPage: (num - 1) / limit,
-		}
-		ctx.JSON(http.StatusOK, response)
+		ctx.JSON(http.StatusOK, gin.H{"maxPage": (num - 1) / limit})
 	})
+
 	router.GET("/api/browse/:page", func(ctx *gin.Context) {
 		page, err := strconv.Atoi(ctx.Param("page"))
 		if err != nil {
@@ -353,14 +349,10 @@ func main() {
 			names = append(names, name)
 			versions = append(versions, version)
 		}
-		ctx.JSON(http.StatusOK, struct {
-			LoraIds  []int    `json:"loraIds"`
-			Names    []string `json:"names"`
-			Versions []string `json:"versions"`
-		}{
-			LoraIds:  loraIds,
-			Names:    names,
-			Versions: versions,
+		ctx.JSON(http.StatusOK, gin.H{
+			"loraIds":  loraIds,
+			"names":    names,
+			"versions": versions,
 		})
 	})
 
@@ -384,20 +376,20 @@ func main() {
 			return
 		}
 
-		lora := struct {
-			Name     string
-			Url      string
-			Version  string
-			Filename string
-		}{}
-		if err := rows.Scan(&lora.Name, &lora.Url, &lora.Version, &lora.Filename); err != nil {
+		var name, url, version, filename string
+		if err := rows.Scan(&name, &url, &version, &filename); err != nil {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			log.Printf("failed to scan lora from query result: %v\n", err)
 			return
 		}
 
 		ctx.Header("Cache-Control", "public, max-age=604800")
-		ctx.JSON(http.StatusOK, lora)
+		ctx.JSON(http.StatusOK, gin.H{
+			"name":     name,
+			"url":      url,
+			"version":  version,
+			"filename": filename,
+		})
 	})
 
 	router.GET("/api/lora/:loraId/urlpreview", func(ctx *gin.Context) {
@@ -460,11 +452,6 @@ func main() {
 			return
 		}
 
-		log.Printf("loraId: %d\n", loraId)
-		log.Printf("promptListId: %d\n", defaultPromptListId)
-		log.Printf("checkpointFilename: %d\n", defaultCheckpoint)
-		log.Printf("sampleType: %d\n", defaultSampleType)
-
 		rows, err := db.Query("SELECT sampleImage FROM sampleImages WHERE loraId = ? AND promptListId = ? AND checkpointFilename = ? AND sampleType = ?", loraId, defaultPromptListId, defaultCheckpoint, defaultSampleType)
 		if err != nil {
 			log.Printf("failed to query default sample image: %v\n", err)
@@ -484,6 +471,152 @@ func main() {
 
 		ctx.Header("Cache-Control", "public, max-age=604800")
 		ctx.Data(200, "image/png", image)
+	})
+
+	router.GET("/api/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId/:sampleType", func(ctx *gin.Context) {
+		loraId, err := strconv.Atoi(ctx.Param("loraId"))
+		if err != nil {
+			log.Printf("failed to parse lora ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		checkpointFilename := ctx.Param("checkpointFilename")
+		promptListId, err := strconv.Atoi(ctx.Param("promptlistId"))
+		if err != nil {
+			log.Printf("failed to parse prompt list ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
+		if err != nil {
+			log.Printf("failed to parse sample type into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query(
+			`SELECT sampleImage FROM sampleImages WHERE loraId = ? AND promptListId = ? AND checkpointFilename = ? AND sampleType = ? LIMIT 1`,
+			loraId, promptListId, checkpointFilename, sampleType)
+		if err != nil {
+			log.Printf("failed to query sample image: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if !rows.Next() {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		var image []byte
+		if err := rows.Scan(&image); err != nil {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			log.Printf("failed to scan sample image: %v\n", err)
+			return
+		}
+
+		ctx.Header("Cache-Control", "public, max-age=604800")
+		ctx.Data(200, "image/png", image)
+	})
+
+	router.GET("/api/lora/:loraId/prompt", func(ctx *gin.Context) {
+		loraId, err := strconv.Atoi(ctx.Param("loraId"))
+		if err != nil {
+			log.Printf("failed to parse loraId: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		stmt := `SELECT promptLists.promptListId, seq, prompt
+FROM promptLists
+LEFT JOIN prompts
+ON promptLists.loraId = prompts.loraId AND promptLists.promptListId = prompts.promptListId
+WHERE promptLists.loraId = ?
+ORDER BY promptLists.promptListId ASC, prompts.seq ASC`
+		rows, err := db.Query(stmt, loraId)
+		if err != nil {
+			log.Printf("failed to query prompts: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		promptListIds := make([]int, 0, 2)
+		seqs := make([]sql.NullInt64, 0, 2)
+		prompts := make([]sql.NullString, 0, 2)
+		for rows.Next() {
+			var promptListId int
+			var seq sql.NullInt64
+			var prompt sql.NullString
+			if err := rows.Scan(&promptListId, &seq, &prompt); err != nil {
+				log.Printf("failed to scan prompt: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			promptListIds = append(promptListIds, promptListId)
+			seqs = append(seqs, seq)
+			prompts = append(prompts, prompt)
+		}
+
+		currentPromptListId := promptListIds[0]
+		currentPrompts := make([]string, 0, 3)
+		promptLists := make([][]string, 0, 1)
+		for i := 0; i < len(promptListIds); i += 1 {
+			if promptListIds[i] != currentPromptListId {
+				promptLists = append(promptLists, currentPrompts)
+				currentPrompts = make([]string, 0, 3)
+				currentPromptListId = promptListIds[i]
+			}
+			if !seqs[i].Valid {
+				continue
+			} else {
+				currentPrompts = append(currentPrompts, prompts[i].String)
+			}
+		}
+		promptLists = append(promptLists, currentPrompts)
+
+		ctx.JSON(http.StatusOK, gin.H{
+			"promptLists":   promptLists,
+			"promptListIds": promptListIds,
+		})
+	})
+
+	router.GET("/api/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId", func(ctx *gin.Context) {
+		loraId, err := strconv.Atoi(ctx.Param("loraId"))
+		if err != nil {
+			log.Printf("failed to parse loraId: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		checkpointFilename := ctx.Param("checkpointFilename")
+		promptlistId, err := strconv.Atoi(ctx.Param("promptlistId"))
+		if err != nil {
+			log.Printf("failed to parse promptlistId: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		stmt := `SELECT sampleType FROM sampleImages
+WHERE loraId = ? AND checkpointFilename = ? AND promptListId = ?
+ORDER BY sampleType ASC`
+		rows, err := db.Query(stmt, loraId, checkpointFilename, promptlistId)
+		if err != nil {
+			log.Printf("failed to query sample types: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		sampleTypes := make([]int, 0, 9)
+		for rows.Next() {
+			var sampleType int
+			if err := rows.Scan(&sampleType); err != nil {
+				log.Printf("failed to scan sample types: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			sampleTypes = append(sampleTypes, sampleType)
+		}
+
+		ctx.JSON(http.StatusOK, gin.H{
+			"sampleTypes": sampleTypes,
+		})
 	})
 
 	router.POST("/api/lora", func(ctx *gin.Context) {
@@ -563,7 +696,7 @@ func main() {
 		ctx.Status(http.StatusOK)
 	})
 
-	router.PUT("/api/lora/:loraId/sampleImage/:promptlistId/:checkpointFilename/:sampleType", func(ctx *gin.Context) {
+	router.PUT("/api/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId/:sampleType", func(ctx *gin.Context) {
 		loraId := ctx.Param("loraId")
 		promptlistId := ctx.Param("promptlistId")
 		checkpointFilename := ctx.Param("checkpointFilename")
@@ -609,6 +742,36 @@ func main() {
 			return
 		}
 		ctx.Status(http.StatusOK)
+	})
+
+	router.GET("/api/checkpoint", func(ctx *gin.Context) {
+		rows, err := db.Query("SELECT checkpointFilename, name, version FROM checkpoints")
+		if err != nil {
+			log.Printf("failed to query checkpoints: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		checkpointFilenames := make([]string, 0, 5)
+		names := make([]string, 0, 5)
+		versions := make([]string, 0, 5)
+		for rows.Next() {
+			var checkpointFilename string
+			var name string
+			var version string
+			if err := rows.Scan(&checkpointFilename, &name, &version); err != nil {
+				log.Printf("failed to scan checkpoint: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			checkpointFilenames = append(checkpointFilenames, checkpointFilename)
+			names = append(names, name)
+			versions = append(versions, version)
+		}
+		ctx.JSON(http.StatusOK, gin.H{
+			"checkpointFilenames": checkpointFilenames,
+			"names":               names,
+			"versions":            versions,
+		})
 	})
 
 	server := &http.Server{

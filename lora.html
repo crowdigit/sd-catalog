@@ -3,10 +3,117 @@
 <head>
   <meta charset="UTF-8">
   <title id="lora-page-title"></title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100..900&display=swap" rel="stylesheet">
+  <style>
+    html *:not(code) {
+      font-family: "Noto Sans JP", sans-serif;
+      font-optical-sizing: auto;
+      font-style: normal;
+    }
+    a, a:hover, a:visited, a:active {
+      color: inherit;
+      text-decoration: none;
+    }
+    code {
+      background-color: #eeeeee;
+    }
+  </style>
 </head>
 <body>
-  <h1 id="lora-title"></h1>
-  <div style="width: 50%;">
+  <a href="/browse-lora">[Browse LoRA]</a>
+  <div id="lora-main" style="width: 50%; margin: auto;">
+    <h1 id="lora-title"></h1>
+    <h2 id="lora-checkpoint-1"></h2>
+    <p id="lora-prompts-1"></p>
+    <img src="" alt="">
   </div>
+  <script>
+    (async () => {
+      const pathname = new URL(location.href).pathname;
+      const loraId = parseInt(pathname.substring(pathname.lastIndexOf("/") + 1))
+
+      const fetchLoraResp = await fetch(new URL(`/api/lora/${loraId}`, location.origin));
+      if (!fetchLoraResp.ok) {
+        alert("failed to fetch loRA data");
+        return;
+      }
+
+      const lora = await fetchLoraResp.json();
+      document.title = lora.name;
+      document.querySelector("#lora-title").textContent = lora.name;
+
+      const loraMain = document.querySelector("#lora-main");
+      const civitaiPreviewElem = document.createElement("img");
+      civitaiPreviewElem.src = new URL(`/api/lora/${loraId}/urlpreview`, location.origin);
+      loraMain.appendChild(civitaiPreviewElem);
+
+      const checkpointResp = await fetch(new URL("/api/checkpoint", location.origin));
+      if (!checkpointResp.ok) {
+        alert("failed to fetch checkpoint data");
+        return;
+      }
+      const checkpointData = await checkpointResp.json();
+
+      const promptResp = await fetch(new URL(`/api/lora/${loraId}/prompt`, location.origin));
+      if (!promptResp.ok) {
+        alert("failed to fetch prompts");
+        return;
+      }
+      const { promptListIds, promptLists } = await promptResp.json();
+
+      for (let checkpointIndex = 0; checkpointIndex < checkpointData.names.length; checkpointIndex += 1) {
+        const checkpointName = checkpointData.names[checkpointIndex];
+        const checkpointVersion = checkpointData.versions[checkpointIndex];
+        const checkpointFilename = checkpointData.checkpointFilenames[checkpointIndex];
+
+        const checkpointNameElem = document.createElement("h2")
+        checkpointNameElem.textContent = `${checkpointName} - ${checkpointVersion}`
+        loraMain.appendChild(checkpointNameElem)
+
+        for (let promptListIndex = 0; promptListIndex < promptListIds.length; promptListIndex += 1) {
+          const promptListId = promptListIds[promptListIndex];
+          const promptList = promptLists[promptListIndex];
+
+          const promptsStr = ((joint) => joint ? joint : "(empty)")((() => promptList.join(", "))());
+          const promptsElem = document.createElement("code")
+          promptsElem.style = "display: block; padding: 10px; margin-bottom: 10px;";
+          promptsElem.textContent = promptsStr;
+          loraMain.appendChild(promptsElem)
+
+          const availableSampleTypesResp = await fetch(new URL(`/api/lora/${loraId}/sampleImage/${checkpointFilename}/${promptListId}`, location.origin));
+          if (!availableSampleTypesResp.ok) {
+            alert("failed to fetch available sample type list");
+            return;
+          }
+          const { sampleTypes } = await availableSampleTypesResp.json();
+          const imgs = [];
+          for (const sampleType of sampleTypes) {
+            const img = document.createElement("img");
+            img.src = new URL(`/api/lora/${loraId}/sampleImage/${checkpointFilename}/${promptListId}/${sampleType}`, location.origin);
+            img.style = "width: 33.33%;";
+            imgs.push(img);
+          }
+          imgs.reduce((rows, img) => {
+            const [rest, back] = (() => {
+              const backRow = rows[rows.length - 1];
+              if (backRow.length === 3) return [rows, []];
+              else return [rows.slice(0, rows.length - 1), backRow];
+            })();
+            back.push(img);
+            rest.push(back);
+            return rest;
+          }, [[]]).map((imgs) => {
+            const rowDiv = document.createElement("div");
+            imgs.forEach((img) => { rowDiv.appendChild(img); })
+            return rowDiv;
+          }).forEach((div) => {
+            loraMain.appendChild(div);
+          });
+        }
+      }
+    })();
+  </script>
 </body>
 </html>
