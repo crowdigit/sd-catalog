@@ -263,7 +263,7 @@ func queryDefaultPromptListId(db *sql.DB, loraId int) (int, error) {
 }
 
 func main() {
-	db, err := sql.Open("sqlite3", "./test.db?_busy_timeout=1000")
+	db, err := sql.Open("sqlite3", "./test.db?_busy_timeout=1000&_journal_mode=WAL")
 	if err != nil {
 		log.Fatalf("failed to open DB file: %v", err)
 	}
