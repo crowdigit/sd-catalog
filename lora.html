@@ -65,21 +65,28 @@
   </div>
   <script>
     (() => {
+      const prev = {{ if .PrevLoraId }}{{ .PrevLoraId }}{{ else }}null{{ end }};
+      const next = {{ if .NextLoraId }}{{ .NextLoraId }}{{ else }}null{{ end }};
+
       const deleteButton = document.querySelector("#delete-lora");
       deleteButton.addEventListener("click", async (event) => {
         if (window.confirm("Delete Lora?\n{{ .LoraRow.Name }} - {{ .LoraRow.Version }}\n{{ .LoraRow.Filename }}")) {
-          await fetch(new URL(`/api/lora/{{ .LoraId }}`, location.origin), {
+          const resp = await fetch(new URL(`/api/lora/{{ .LoraId }}`, location.origin), {
             method: "DELETE",
           });
+          if (!resp.ok) {
+            alert("failed to delete lora");
+            return;
+          }
+          if (next) location.href = new URL(`/lora/${next}`, location.origin);
+          else if (prev) location.href = new URL(`/lora/${prev}`, location.origin);
         }
       });
 
       document.addEventListener("keydown", async (event) => {
         if (event.key === "ArrowLeft") {
-          const prev = {{ if .PrevLoraId }}{{ .PrevLoraId }}{{ else }}null{{ end }};
           if (prev) location.href = new URL(`/lora/${prev}`, location.origin);
         } else if (event.key === "ArrowRight") {
-          const next = {{ if .NextLoraId }}{{ .NextLoraId }}{{ else }}null{{ end }};
           if (next) location.href = new URL(`/lora/${next}`, location.origin);
         }
       });
