@@ -18,6 +18,9 @@
     }
     code {
       background-color: #eeeeee;
+      display: block;
+      padding: 10px;
+      margin-bottom: 10px;
     }
   </style>
 </head>
@@ -25,9 +28,6 @@
   <a href="/browse-lora">[Browse LoRA]</a>
   <div id="lora-main" style="width: 50%; margin: auto;">
     <h1 id="lora-title"></h1>
-    <h2 id="lora-checkpoint-1"></h2>
-    <p id="lora-prompts-1"></p>
-    <img src="" alt="">
   </div>
   <script>
     (async () => {
@@ -42,9 +42,16 @@
 
       const lora = await fetchLoraResp.json();
       document.title = lora.name;
-      document.querySelector("#lora-title").textContent = lora.name;
-
+      document.querySelector("#lora-title").textContent = `${lora.name} - ${lora.version}`;
       const loraMain = document.querySelector("#lora-main");
+      const civitaiLink = document.createElement("a");
+      civitaiLink.href = lora.url
+      civitaiLink.textContent = "[View on civitai.com]";
+      loraMain.appendChild(civitaiLink);
+      const filename = document.createElement("code");
+      filename.textContent = lora.filename
+      loraMain.appendChild(filename);
+
       const civitaiPreviewElem = document.createElement("img");
       civitaiPreviewElem.src = new URL(`/api/lora/${loraId}/urlpreview`, location.origin);
       loraMain.appendChild(civitaiPreviewElem);
@@ -78,7 +85,6 @@
 
           const promptsStr = ((joint) => joint ? joint : "(empty)")((() => promptList.join(", "))());
           const promptsElem = document.createElement("code")
-          promptsElem.style = "display: block; padding: 10px; margin-bottom: 10px;";
           promptsElem.textContent = promptsStr;
           loraMain.appendChild(promptsElem)
 
