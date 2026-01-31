@@ -885,6 +885,28 @@ func main() {
 		ctx.Status(http.StatusOK)
 	})
 
+	router.DELETE("/api/lora/:loraId", func(ctx *gin.Context) {
+		loraId, err := strconv.Atoi(ctx.Param("loraId"))
+		if err != nil {
+			log.Printf("failed to parse lora ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if rows, err := db.Exec("DELETE FROM loras WHERE loraId = ?", loraId); err != nil {
+			log.Printf("failed to delete lora: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if affected, err := rows.RowsAffected(); err != nil {
+			log.Printf("failed to get affected row number: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if affected == 0 {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		ctx.Status(http.StatusOK)
+	})
+
 	server := &http.Server{
 		Addr:    "192.168.123.10:8080",
 		Handler: router.Handler(),
