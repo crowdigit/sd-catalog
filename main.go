@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 )
 
 var comfyUiEndpoint = "192.168.123.10:8081"
+var comfyUiLoraPath = ""
 
 type Lora struct {
 	Name        string
@@ -892,6 +894,15 @@ func main() {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
+		lora, err := queryLora(db, loraId)
+		if err != nil {
+			log.Printf("failed to query lora: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if lora == nil {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
 		if rows, err := db.Exec("DELETE FROM loras WHERE loraId = ?", loraId); err != nil {
 			log.Printf("failed to delete lora: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
@@ -902,6 +913,11 @@ func main() {
 			return
 		} else if affected == 0 {
 			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		if err := os.Remove(filepath.Join(comfyUiLoraPath, lora.Filename)); err != nil {
+			log.Printf("failed to delete lora file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 		ctx.Status(http.StatusOK)

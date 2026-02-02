@@ -37,10 +37,28 @@
       width: 50em;
       max-width: 33.33%;
     }
+    #control-div {
+      position: fixed;
+      top: 0px;
+      left: 0px;
+      margin-left: 30px;
+      margin-top: 35px;
+      background-color: #ccc;
+      padding: 20px;
+    }
+    .navigate {
+      width: 5em;
+      height: 5em;
+    }
   </style>
 </head>
 <body>
-  <a href="/browse-lora">[Browse LoRA]</a>
+  <a href="/browse-lora">[Browse LoRA]</a><br><br>
+  <div id="control-div">
+    <button id="prev-button" class="navigate">◀</button>
+    <button id="next-button" class="navigate">▶</button><br><br>
+    <button id="delete-lora">DELETE</button>
+  </div>
   <div id="lora-main" style="width: 100em; max-width: 80%; margin: auto;">
     <h1>{{ .LoraRow.Name }} - {{ .LoraRow.Version }}</h1>
     <a href="{{ .LoraRow.URL }}">[View on civitai.com]</a>
@@ -61,7 +79,6 @@
     {{ end }}
     {{ end }}
     {{ end }}
-    <button id="delete-lora">DELETE LORA</button>
   </div>
   <script>
     (() => {
@@ -82,6 +99,24 @@
           else if (prev) location.href = new URL(`/lora/${prev}`, location.origin);
         }
       });
+
+      const prevButton = document.querySelector("#prev-button")
+      if (prev) {
+        prevButton.addEventListener("click", async (event) => {
+          if (prev) location.href = new URL(`/lora/${prev}`, location.origin);
+        })
+      } else {
+        prevButton.disabled = true;
+      }
+
+      const nextButton = document.querySelector("#next-button")
+      if (next) {
+        nextButton.addEventListener("click", async (event) => {
+          if (next) location.href = new URL(`/lora/${next}`, location.origin);
+        })
+      } else {
+        nextButton.disabled = true;
+      }
 
       document.addEventListener("keydown", async (event) => {
         if (event.key === "ArrowLeft") {
