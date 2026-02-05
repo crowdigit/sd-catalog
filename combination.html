@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Combination {{ .CombinationId }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100..900&display=swap" rel="stylesheet">
+  <style>
+    html *:not(code) {
+      font-family: "Noto Sans JP", sans-serif;
+      font-optical-sizing: auto;
+      font-style: normal;
+    }
+    a, a:hover, a:visited, a:active {
+      color: inherit;
+      text-decoration: none;
+    }
+    code {
+      background-color: #eeeeee;
+      display: block;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    #civitai-preview {
+      display: block;
+      margin-left: auto;
+      margin-right: auto;
+      width: 70em;
+      max-width: 80%;
+    }
+    .sampleImageRow {
+      display: block;
+      margin: auto;
+    }
+    .sampleImage {
+      width: 50em;
+      max-width: 33.33%;
+    }
+    #control-div {
+      position: fixed;
+      top: 0px;
+      left: 0px;
+      margin-left: 30px;
+      margin-top: 35px;
+      background-color: #ccc;
+      padding: 20px;
+    }
+    .navigate {
+      width: 5em;
+      height: 5em;
+    }
+  </style>
+</head>
+<body>
+  <a href="/browse-combination">[Browse LoRA Combination]</a><br><br>
+  <div id="control-div">
+    <button id="prev-button" class="navigate">◀</button>
+    <button id="next-button" class="navigate">▶</button><br>
+  </div>
+  <div style="width: 100em; max-width: 80%; margin: auto;">
+    <code>{{ .Prompts }}</code>
+    <table>
+      <thead>
+        <tr>
+          <th>Filename</th>
+          <th>Strength</th>
+          <th>Link</th>
+        </tr>
+      </thead>
+      {{ $ToFloat := .ToFloat }}
+      {{ range $Component := .Components }}
+      <tr>
+        <td>{{ $Component.Filename }}</td>
+        <td>{{ $FStrength := call $ToFloat $Component.Strength }}{{ printf "%.2f" $FStrength }}</td>
+        <td><a href="/lora/{{ $Component.LoraId }}">Link</a></td>
+      </tr>
+      {{ end }}
+    </table>
+    {{ $CheckpointsSampleTypes := .SampleTypes }}
+    {{ $CombinationId := .CombinationId }}
+    {{ range $CheckpointIndex, $Checkpoint := .Checkpoints }}
+    <h1>{{ $Checkpoint.Name }} - {{ $Checkpoint.Version }}</h1>
+    {{ $CheckpointFilename := $Checkpoint.CheckpointFilename }}
+    {{ range $SampleTypeRow := index $CheckpointsSampleTypes $CheckpointIndex  }}
+    <div>
+      {{ range $SampleType := $SampleTypeRow }}<img src="/api/combination/{{ $CombinationId }}/sampleImage/{{ $CheckpointFilename }}/{{ $SampleType }}" alt="" class="sampleImage">{{ end }}
+    </div>
+    {{ end }}
+    {{ end }}
+  </div>
+  <script>
+    (() => {
+      const prev = {{ if .PrevCombinationId }}{{ .PrevCombinationId }}{{ else }}null{{ end }};
+      const next = {{ if .NextCombinationId }}{{ .NextCombinationId }}{{ else }}null{{ end }};
+
+      const prevButton = document.querySelector("#prev-button")
+      if (prev) {
+        prevButton.addEventListener("click", async (event) => {
+          if (prev) location.href = new URL(`/combination/${prev}`, location.origin);
+        })
+      } else {
+        prevButton.disabled = true;
+      }
+
+      const nextButton = document.querySelector("#next-button")
+      if (next) {
+        nextButton.addEventListener("click", async (event) => {
+          if (next) location.href = new URL(`/combination/${next}`, location.origin);
+        })
+      } else {
+        nextButton.disabled = true;
+      }
+
+      document.addEventListener("keydown", async (event) => {
+        if (event.key === "ArrowLeft") {
+          if (prev) location.href = new URL(`/combination/${prev}`, location.origin);
+        } else if (event.key === "ArrowRight") {
+          if (next) location.href = new URL(`/combination/${next}`, location.origin);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

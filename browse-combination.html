@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Browse LoRA</title>
+  <title>Browse LoRA Combinations</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100..900&display=swap" rel="stylesheet">
@@ -24,33 +24,27 @@
       background-color: #ccc;
       padding: 20px;
     }
+    .sampleImage {
+      width: 50em;
+      max-width: 33.33%;
+    }
   </style>
   <script>
-    function addCatalogEntry(div, loraId, name, version, sampleType) {
-      const loraPageElem = document.createElement("a");
-      loraPageElem.className = "lora-link";
-      loraPageElem.href = new URL(`/lora/${loraId}`, location.origin);
-      loraPageElem.textContent = `${name} - ${version}`;
-      const titleElem = document.createElement("h2");
-      titleElem.appendChild(loraPageElem);
-      div.appendChild(titleElem);
+    function addCatalogRow(div, row, sampleType) {
+      const rowDiv = document.createElement("div");
+      console.log(row);
+      for (const [index, id] of row.entries()) {
+        const combinationAnchorElem = document.createElement("a");
+        combinationAnchorElem.href = new URL(`/combination/${id}`, location.origin);
 
-      const entryDiv = document.createElement("div");
-      entryDiv.style = "display: flex; justify-content: center;";
+        const combinationPreviewImgElem = document.createElement("img");
+        combinationPreviewImgElem.className = "sampleImage";
+        combinationPreviewImgElem.src = new URL(`/api/combination/${id}/preview/${sampleType}`, location.origin);
+        combinationAnchorElem.appendChild(combinationPreviewImgElem);
 
-      const civitaiPreview = document.createElement("img");
-      civitaiPreview.style = "width: 70%; height: 70%;";
-      const civitaiPreviewUrl = new URL(`/api/lora/${loraId}/urlpreview`, location.origin);
-      civitaiPreview.src = civitaiPreviewUrl;
-      entryDiv.appendChild(civitaiPreview);
-
-      const loraPreview = document.createElement("img");
-      loraPreview.style = "width: 35%; height: 35%";
-      const loraPreviewUrl = new URL(`/api/lora/${loraId}/preview/${sampleType}`, location.origin);
-      loraPreview.src = loraPreviewUrl;
-      entryDiv.appendChild(loraPreview);
-
-      div.appendChild(entryDiv);
+        rowDiv.appendChild(combinationAnchorElem);
+      }
+      div.appendChild(rowDiv);
     }
 
     function gotoPage(targetPage, sampleType) {
@@ -64,26 +58,26 @@
 <body>
   <div id="browse-control-div">
     <a href="/">[Top]</a><br>
-    <input id="browse-lora-page-input" type="number">
-    <p id="browse-lora-maxpage-indic" style="display: inline;"></p>
-    <button id="browse-lora-gobutton" type="button">Go</button><br>
-    <input id="browse-lora-sampletype" type="number">
+    <input id="browse-combination-page-input" type="number">
+    <p id="browse-combination-maxpage-indic" style="display: inline;"></p>
+    <button id="browse-combination-gobutton" type="button">Go</button><br>
+    <input id="browse-combination-sampletype" type="number">
   </div>
-  <div style="width: 100em; max-width: 80%; margin: auto;" id="browse-lora-catalog">
-  <h1>Browse LoRA</h1>
+  <div style="width: 100em; max-width: 80%; margin: auto;" id="browse-combination-catalog">
+  <h1>Browse LoRA Combinations</h1>
   </div>
   <script>
     (async () => {
-      const fetchPageUrl = new URL("/api/browse/lora", location.origin);
+      const fetchPageUrl = new URL("/api/browse/combination", location.origin);
       const response = await fetch(fetchPageUrl);
       if (!response.ok) {
         alert("failed to fetch page data");
         return;
       }
       const { maxPage } = await response.json();
-      const maxPageIndic = document.querySelector("#browse-lora-maxpage-indic");
-      const pageInput = document.querySelector("#browse-lora-page-input");
-      const sampleTypeInput = document.querySelector("#browse-lora-sampletype");
+      const maxPageIndic = document.querySelector("#browse-combination-maxpage-indic");
+      const pageInput = document.querySelector("#browse-combination-page-input");
+      const sampleTypeInput = document.querySelector("#browse-combination-sampletype");
       const searchParams = new URL(location.href).searchParams;
       const currentPage = parseInt(searchParams.get("page") ?? "0");
       const currentSampleType = parseInt(searchParams.get("sampleType") ?? "1");
@@ -94,7 +88,7 @@
       sampleTypeInput.value = currentSampleType
       sampleTypeInput.style = "width: 100px";
 
-      const goButton = document.querySelector("#browse-lora-gobutton");
+      const goButton = document.querySelector("#browse-combination-gobutton");
       goButton.onclick = () => {
         gotoPage(pageInput.value, sampleTypeInput.value);
       };
@@ -117,15 +111,25 @@
         }
       })
 
-      const browseResp = await fetch(new URL(`/api/browse/lora/${currentPage}`, location.origin));
+      const browseResp = await fetch(new URL(`/api/browse/combination/${currentPage}`, location.origin));
       if (!browseResp.ok) {
         alert("failed to fetch browse data");
         return;
       }
-      const { loraIds, names, versions } = await browseResp.json();
-      const catalogDiv = document.querySelector("#browse-lora-catalog");
-      for (let i = 0; i < loraIds.length; i += 1) {
-        addCatalogEntry(catalogDiv, loraIds[i], names[i], versions[i], currentSampleType);
+      const { combinationIds } = await browseResp.json();
+      const catalogDiv = document.querySelector("#browse-combination-catalog");
+
+      const columnNum = 3;
+      const combinationRows = [];
+      for (let i = 0; i < combinationIds.length / columnNum; i += 1) {
+        const combinations = [];
+        for (let j = i * columnNum; j < Math.min((i + 1) * columnNum, combinationIds.length); j += 1)
+          combinations.push(combinationIds[j]);
+        combinationRows.push(combinations);
+      }
+
+      for (let i = 0; i < combinationRows.length; i += 1) {
+        addCatalogRow(catalogDiv, combinationRows[i], currentSampleType);
       }
     })();
   </script>

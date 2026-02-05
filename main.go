@@ -183,8 +183,55 @@ defaultSampleType (
 	if _, err := db.Exec(stmt8); err != nil {
 		return fmt.Errorf("failed to create default sample type type: %v\n", err)
 	}
+
+	stmt9 := `CREATE TABLE IF NOT EXISTS
+loraCombinations (
+	loraCombinationId INTEGER PRIMARY KEY ASC AUTOINCREMENT
+)`
+	if _, err := db.Exec(stmt9); err != nil {
+		return fmt.Errorf("failed to create lora combination table: %v\n", err)
+	}
+
+	stmt10 := `CREATE TABLE IF NOT EXISTS
+loraCombinationComponents (
+	loraCombinationId REFERENCES loraCombinations ( loraCombinationId ) ON DELETE CASCADE,
+	loraId REFERENCES loras ( loraId ) ON DELETE CASCADE,
+	seq INTEGER NOT NULL,
+	strength INTEGER NOT NULL,
+	UNIQUE ( loraCombinationId, loraId, seq ) ON CONFLICT FAIL
+)`
+	if _, err := db.Exec(stmt10); err != nil {
+		return fmt.Errorf("failed to create lora combination table: %v\n", err)
+	}
+
+	stmt11 := `CREATE TABLE IF NOT EXISTS
+loraCombinationSampleImages (
+	loraCombinationId REFERENCES loraCombinations ( loraCombinationId ) ON DELETE CASCADE,
+	checkpointFilename REFERENCES checkpoints ( checkpointFilename ) ON DELETE CASCADE,
+	sampleType INTEGER NOT NULL,
+	sampleImage BLOB NOT NULL,
+	UNIQUE ( loraCombinationId, checkpointFilename, sampleType ) ON CONFLICT REPLACE
+)`
+	if _, err := db.Exec(stmt11); err != nil {
+		return fmt.Errorf("failed to create lora combination table: %v\n", err)
+	}
+
+	stmt12 := `CREATE TABLE IF NOT EXISTS
+loraCombinationPrompts (
+	loraCombinationId REFERENCES loraCombinations ( loraCombinationId ) ON DELETE CASCADE,
+	seq INTEGER NOT NULL,
+	prompt TEXT NOT NULL,
+	UNIQUE ( loraCombinationId, seq ) ON CONFLICT FAIL,
+	CHECK ( prompt <> "" )
+)`
+	if _, err := db.Exec(stmt12); err != nil {
+		return fmt.Errorf("failed to create lora combination table: %v\n", err)
+	}
 	return nil
 }
+
+//go:embed submit-lora-combination.html
+var submitLoraCombinationHtml string
 
 //go:embed submit-lora.html
 var submitLoraHtml string
@@ -198,8 +245,14 @@ var indexHtml string
 //go:embed browse-lora.html
 var browseLoraHtml string
 
+//go:embed browse-combination.html
+var browseCombinationHtml string
+
 //go:embed lora.html
 var loraHtml string
+
+//go:embed combination.html
+var combinationHtml string
 
 type PostLoraForm struct {
 	Title    string `form:"title"`
@@ -288,6 +341,44 @@ func queryLora(db *sql.DB, loraId int) (*LoraRow, error) {
 	return &lora, nil
 }
 
+type LoraCombinationsComponent struct {
+	LoraId   int
+	Filename string
+	Seq      int
+	Strength int
+	Name     string
+	Version  string
+}
+
+func queryCombinationComponents(db *sql.DB, combinationId int) ([]LoraCombinationsComponent, error) {
+	rows, err := db.Query(`SELECT
+	loraCombinationComponents.loraId,
+	loraCombinationComponents.seq,
+	loraCombinationComponents.strength,
+	loras.name,
+	loras.version,
+	loras.filename
+FROM loraCombinations
+LEFT JOIN loraCombinationComponents
+ON loraCombinations.loraCombinationId = loraCombinationComponents.loraCombinationId
+LEFT JOIN loras
+ON loraCombinationComponents.loraId = loras.loraId
+WHERE loraCombinations.loraCombinationId = ?
+ORDER BY seq ASC`, combinationId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select lora components: %w", err)
+	}
+	components := make([]LoraCombinationsComponent, 0, 6)
+	for rows.Next() {
+		var component LoraCombinationsComponent
+		if err := rows.Scan(&component.LoraId, &component.Seq, &component.Strength, &component.Name, &component.Version, &component.Filename); err != nil {
+			return nil, fmt.Errorf("failed to scan lora component: %w", err)
+		}
+		components = append(components, component)
+	}
+	return components, nil
+}
+
 type CheckpointRow struct {
 	CheckpointFilename string
 	Name               string
@@ -356,6 +447,30 @@ ORDER BY promptLists.promptListId ASC, prompts.seq ASC`
 	return promptList, nil
 }
 
+func queryCombinationPrompts(db *sql.DB, combinationId int) ([]string, error) {
+	stmt := `SELECT prompt
+FROM loraCombinations
+LEFT JOIN loraCombinationPrompts
+ON loraCombinations.loraCombinationId = loraCombinationPrompts.loraCombinationId
+WHERE loraCombinations.loraCombinationId = ?
+ORDER BY seq ASC`
+	rows, err := db.Query(stmt, combinationId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query combination prompts: %w", err)
+	}
+
+	promptList := make([]string, 0, 1)
+	for rows.Next() {
+		var prompt string
+		if err := rows.Scan(&prompt); err != nil {
+			return nil, fmt.Errorf("failed to scan prompt: %v\n", err)
+		}
+		promptList = append(promptList, prompt)
+	}
+
+	return promptList, nil
+}
+
 func queryAvailableSampleImageTypes(db *sql.DB, loraId int, checkpointFilename string, promptListId int) ([]int, error) {
 	stmt := `SELECT sampleType FROM sampleImages
 	WHERE loraId = ? AND checkpointFilename = ? AND promptListId = ?
@@ -411,8 +526,42 @@ FROM (
 	return prevCoale, nextCoale, nil
 }
 
+func queryCombinationRelativeBrowseData(db *sql.DB, combinationId int) (*int, *int, error) {
+	rows, err := db.Query(`SELECT prev, next
+FROM (
+	SELECT
+		lag( loraCombinationId ) OVER ( ORDER BY loraCombinationId ) AS prev,
+		loraCombinationId,
+		LEAD( loraCombinationId ) OVER ( ORDER BY loraCombinationId ) AS next
+	FROM loraCombinations
+) WHERE loraCombinationId = ? LIMIT 1;`, combinationId)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to query combination browse data: %w", err)
+	}
+	if !rows.Next() {
+		return nil, nil, nil
+	}
+	var prev, next sql.NullInt64
+	if err := rows.Scan(&prev, &next); err != nil {
+		return nil, nil, fmt.Errorf("failed to scan combination browse data: %w", err)
+	}
+
+	var prevCoale *int = nil
+	var nextCoale *int = nil
+
+	if prev.Valid {
+		prevCoale = new(int)
+		*prevCoale = int(prev.Int64)
+	}
+	if next.Valid {
+		nextCoale = new(int)
+		*nextCoale = int(next.Int64)
+	}
+	return prevCoale, nextCoale, nil
+}
+
 func main() {
-	db, err := sql.Open("sqlite3", "./test.db?_busy_timeout=1000&_journal_mode=WAL")
+	db, err := sql.Open("sqlite3", "./test.db?_busy_timeout=1000&_journal_mode=WAL&_foreign_keys=true")
 	if err != nil {
 		log.Fatalf("failed to open DB file: %v", err)
 	}
@@ -423,6 +572,11 @@ func main() {
 	}
 
 	loraHtmlTpl, err := template.New("lora").Parse(loraHtml)
+	if err != nil {
+		log.Fatalf("failed to parse lora html template: %v\n", err)
+	}
+
+	combinationHtmlTpl, err := template.New("lora").Parse(combinationHtml)
 	if err != nil {
 		log.Fatalf("failed to parse lora html template: %v\n", err)
 	}
@@ -439,6 +593,11 @@ func main() {
 		ctx.String(http.StatusOK, submitLoraHtml)
 	})
 
+	router.GET("/submit-lora-combination", func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, submitLoraCombinationHtml)
+	})
+
 	router.GET("/submit-checkpoint", func(ctx *gin.Context) {
 		ctx.Header("Content-Type", "text/html")
 		ctx.String(http.StatusOK, submitCheckpointHtml)
@@ -447,6 +606,11 @@ func main() {
 	router.GET("/browse-lora", func(ctx *gin.Context) {
 		ctx.Header("Content-Type", "text/html")
 		ctx.String(http.StatusOK, browseLoraHtml)
+	})
+
+	router.GET("/browse-combination", func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, browseCombinationHtml)
 	})
 
 	router.GET("/lora/:loraId", func(ctx *gin.Context) {
@@ -557,9 +721,114 @@ func main() {
 		ctx.Data(http.StatusOK, "text/html", loraHtmlInstBuf.Bytes())
 	})
 
+	router.GET("/combination/:combinationId", func(ctx *gin.Context) {
+		combinationId, err := strconv.Atoi(ctx.Param("combinationId"))
+		if err != nil {
+			log.Printf("failed to parse lora ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		components, err := queryCombinationComponents(db, combinationId)
+		if err != nil {
+			log.Printf("failed to query lora components: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		checkpoints, err := queryCheckpoints(db)
+		if err != nil {
+			log.Printf("failed to query checkpoints: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		prompts, err := queryCombinationPrompts(db, combinationId)
+		if err != nil {
+			log.Printf("failed to query prompts: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		sampleTypes := make([][][]int, 0, 1)
+		for _, checkpoint := range checkpoints {
+			stmt := `SELECT sampleType
+FROM loraCombinationSampleImages
+WHERE
+	loraCombinationSampleImages.loraCombinationId = ?
+	AND checkpointFilename = ?
+ORDER BY sampleType ASC`
+			rows, err := db.Query(stmt, combinationId, checkpoint.CheckpointFilename)
+			if err != nil {
+				log.Printf("failed to query available sample images: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			sampleTypeRows := make([][]int, 0, 9)
+			sampleTypeRows = append(sampleTypeRows, make([]int, 0, 3))
+			for rows.Next() {
+				var sampleType int
+				if err := rows.Scan(&sampleType); err != nil {
+					log.Printf("failed to scan available sample images: %v\n", err)
+					ctx.AbortWithStatus(http.StatusBadRequest)
+					return
+				}
+				tail := sampleTypeRows[len(sampleTypeRows)-1]
+				if len(tail) == 3 {
+					tail = make([]int, 0, 3)
+					sampleTypeRows = append(sampleTypeRows, tail)
+				}
+				tail = append(tail, sampleType)
+				sampleTypeRows[len(sampleTypeRows)-1] = tail
+			}
+			sampleTypes = append(sampleTypes, sampleTypeRows)
+		}
+
+		promptsJoint := strings.Join(prompts, ", ")
+
+		prev, next, err := queryCombinationRelativeBrowseData(db, combinationId)
+		if err != nil {
+			log.Printf("failed to query lora relative browse data: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if prev == nil && next == nil {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+
+		var combinationHtmlInstBuf bytes.Buffer
+		if err := combinationHtmlTpl.Execute(&combinationHtmlInstBuf, struct {
+			ToFloat           func(int) float64
+			CombinationId     int
+			Components        []LoraCombinationsComponent
+			Checkpoints       []CheckpointRow
+			SampleTypes       [][][]int
+			Prompts           string
+			PrevCombinationId *int
+			NextCombinationId *int
+		}{
+			ToFloat:           func(n int) float64 { return 0.01 * float64(n) },
+			CombinationId:     combinationId,
+			Components:        components,
+			Checkpoints:       checkpoints,
+			SampleTypes:       sampleTypes,
+			Prompts:           promptsJoint,
+			PrevCombinationId: prev,
+			NextCombinationId: next,
+		}); err != nil {
+			log.Printf("failed to instantiate lora html template: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		ctx.Header("Content-Type", "text/html")
+		ctx.Data(http.StatusOK, "text/html", combinationHtmlInstBuf.Bytes())
+	})
+
 	limit := 5
 
-	router.GET("/api/browse", func(ctx *gin.Context) {
+	router.GET("/api/browse/lora", func(ctx *gin.Context) {
 		rows, err := db.Query("SELECT COUNT(*) AS num FROM loras")
 		if err != nil {
 			log.Printf("failed to select lora IDs: %v\n", err)
@@ -576,7 +845,7 @@ func main() {
 		ctx.JSON(http.StatusOK, gin.H{"maxPage": (num - 1) / limit})
 	})
 
-	router.GET("/api/browse/:page", func(ctx *gin.Context) {
+	router.GET("/api/browse/lora/:page", func(ctx *gin.Context) {
 		page, err := strconv.Atoi(ctx.Param("page"))
 		if err != nil {
 			log.Printf("failed to parse page into integer: %v\n", err)
@@ -610,6 +879,53 @@ func main() {
 			"loraIds":  loraIds,
 			"names":    names,
 			"versions": versions,
+		})
+	})
+
+	combinationLimit := 9
+	router.GET("/api/browse/combination", func(ctx *gin.Context) {
+		rows, err := db.Query("SELECT COUNT(*) AS num FROM loraCombinations")
+		if err != nil {
+			log.Printf("failed to select combination IDs: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		rows.Next()
+		var num int
+		if err := rows.Scan(&num); err != nil {
+			log.Printf("failed to scan combination ID from row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{"maxPage": (num - 1) / combinationLimit})
+	})
+
+	router.GET("/api/browse/combination/:page", func(ctx *gin.Context) {
+		page, err := strconv.Atoi(ctx.Param("page"))
+		if err != nil {
+			log.Printf("failed to parse page into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		offset := combinationLimit * page
+		rows, err := db.Query("SELECT loraCombinationId FROM loraCombinations ORDER BY loraCombinationId ASC LIMIT ? OFFSET ?", combinationLimit, offset)
+		if err != nil {
+			log.Printf("failed to select combination IDs: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		combinationIds := make([]int, 0, combinationLimit)
+		for rows.Next() {
+			var combinationId int64
+			if err := rows.Scan(&combinationId); err != nil {
+				log.Printf("failed to scan combination ID from row: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			combinationIds = append(combinationIds, int(combinationId))
+		}
+		ctx.JSON(http.StatusOK, gin.H{
+			"combinationIds": combinationIds,
 		})
 	})
 
@@ -682,13 +998,6 @@ func main() {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-
-		// defaultSampleType, err := queryDefaultSampleType(db, loraId)
-		// if err != nil {
-		// 	log.Printf("failed to query default sampe type: %v\n", err)
-		// 	ctx.AbortWithStatus(http.StatusBadRequest)
-		// 	return
-		// }
 
 		defaultPromptListId, err := queryDefaultPromptListId(db, loraId)
 		if err != nil {
@@ -839,6 +1148,133 @@ func main() {
 		ctx.Status(http.StatusOK)
 	})
 
+	router.POST("/api/lora-combination", func(ctx *gin.Context) {
+		var postCombinationForm struct {
+			Ids       string `form:"ids"`
+			Strengths string `form:"strengths"`
+			Prompts   string `form:"prompts"`
+		}
+		if err := ctx.Bind(&postCombinationForm); err != nil {
+			log.Printf("failed to bind post combination form: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		var postCombinationFormCoalesced struct {
+			Ids       []int
+			Strengths []int
+			Prompts   []string
+		}
+		if err := json.Unmarshal([]byte(postCombinationForm.Ids), &postCombinationFormCoalesced.Ids); err != nil {
+			log.Printf("failed to unmarshal ids into integer array: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if err := json.Unmarshal([]byte(postCombinationForm.Strengths), &postCombinationFormCoalesced.Strengths); err != nil {
+			log.Printf("failed to unmarshal strengths into integer array: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if err := json.Unmarshal([]byte(postCombinationForm.Prompts), &postCombinationFormCoalesced.Prompts); err != nil {
+			log.Printf("failed to unmarshal prompts into string array: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		abort := false
+		tx, err := db.Begin()
+		if err != nil {
+			log.Printf("failed to start lora combination transaction: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			abort = true
+			return
+		}
+		defer func() {
+			if abort {
+				tx.Rollback()
+			}
+		}()
+
+		stmt0 := `INSERT INTO loraCombinations DEFAULT VALUES`
+		stmt0Result, err := tx.Exec(stmt0)
+		if err != nil {
+			log.Printf("failed to insert new lora combination: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			abort = true
+			return
+		}
+		loraCombinationId, err := stmt0Result.LastInsertId()
+		if err != nil {
+			log.Printf("failed to get new lora combination ID: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			abort = true
+			return
+		}
+		for index, loraId := range postCombinationFormCoalesced.Ids {
+			stmt1 := `INSERT INTO loraCombinationComponents ( loraCombinationId, loraId, seq, strength ) VALUES ( ?, ?, ?, ? )`
+			if _, err := tx.Exec(stmt1, loraCombinationId, loraId, index+1, postCombinationFormCoalesced.Strengths[index]); err != nil {
+				log.Printf("failed to insert lora combination component: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				abort = true
+				return
+			}
+		}
+
+		for index, prompt := range postCombinationFormCoalesced.Prompts {
+			stmt2 := `INSERT INTO loraCombinationPrompts ( loraCombinationId, seq, prompt ) VALUES ( ?, ?, ? )`
+			if _, err := tx.Exec(stmt2, loraCombinationId, index+1, prompt); err != nil {
+				log.Printf("failed to insert lora combination prompt: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				abort = true
+				return
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("failed to commit lora combination transaction: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			abort = true
+			return
+		}
+
+		u := url.URL{
+			Scheme: "http",
+			Host:   comfyUiEndpoint,
+			Path:   "/api/queue-combination",
+		}
+		rows, err := db.Query("SELECT checkpointFilename FROM defaultCheckpoint LIMIT 1")
+		if err != nil {
+			log.Printf("failed to query default checkpoint filename: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if !rows.Next() {
+			log.Printf("default checkpoint is not defined\n")
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		var defaultCheckpoint string
+		if err := rows.Scan(&defaultCheckpoint); err != nil {
+			log.Printf("failed to scan default checkpoint filename: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		q := u.Query()
+		q.Set("combinationId", strconv.Itoa(int(loraCombinationId)))
+		q.Set("checkpointFilename", defaultCheckpoint)
+		u.RawQuery = q.Encode()
+		log.Println(u.String())
+		if resp, err := http.Post(u.String(), "", nil); err != nil {
+			log.Printf("failed to enqueue sample image: %v", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if resp.StatusCode < 200 || resp.StatusCode > 300 {
+			log.Printf("ComfyUI responded with status: %d", resp.StatusCode)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		ctx.Status(http.StatusOK)
+	})
+
 	router.PUT("/api/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId/:sampleType", func(ctx *gin.Context) {
 		loraId := ctx.Param("loraId")
 		promptlistId := ctx.Param("promptlistId")
@@ -872,6 +1308,130 @@ func main() {
 			return
 		}
 		ctx.Status(http.StatusOK)
+	})
+
+	router.PUT("/api/lora-combination/:loraCombinationId/sampleImage/:checkpointFilename/:sampleType", func(ctx *gin.Context) {
+		loraCombinationId, err := strconv.Atoi(ctx.Param("loraCombinationId"))
+		if err != nil {
+			log.Printf("failed to convert lora combination id parameter into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		checkpointFilename := ctx.Param("checkpointFilename")
+		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
+		if err != nil {
+			log.Printf("failed to convert sample type parameter into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		sampleImageHeader, err := ctx.FormFile("sampleimage")
+		if err != nil {
+			log.Printf("failed to get sampleimage file from post sample image form: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		sampleImageFile, err := sampleImageHeader.Open()
+		if err != nil {
+			log.Printf("failed to open sampleimage file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		defer sampleImageFile.Close()
+		sampleImage, err := io.ReadAll(sampleImageFile)
+		if err != nil {
+			log.Printf("failed to read sampleimage file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		stmt := `INSERT INTO loraCombinationSampleImages ( loraCombinationId, checkpointFilename, sampleType, sampleImage ) VALUES ( ?, ?, ?, ? )`
+
+		if _, err := db.Exec(stmt, loraCombinationId, checkpointFilename, sampleType, sampleImage); err != nil {
+			log.Printf("failed to insert new sample image row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		ctx.Status(http.StatusOK)
+	})
+
+	router.GET("/api/combination/:combinationId/sampleImage/:checkpointFilename/:sampleType", func(ctx *gin.Context) {
+		combinationId, err := strconv.Atoi(ctx.Param("combinationId"))
+		if err != nil {
+			log.Printf("failed to parse combination ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		checkpointFilename := ctx.Param("checkpointFilename")
+		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
+		if err != nil {
+			log.Printf("failed to parse sample type into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query(
+			`SELECT sampleImage FROM loraCombinationSampleImages WHERE loraCombinationId = ? AND checkpointFilename = ? AND sampleType = ? LIMIT 1`,
+			combinationId, checkpointFilename, sampleType)
+		if err != nil {
+			log.Printf("failed to query sample image: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if !rows.Next() {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		var image []byte
+		if err := rows.Scan(&image); err != nil {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			log.Printf("failed to scan sample image: %v\n", err)
+			return
+		}
+
+		ctx.Header("Cache-Control", "public, max-age=604800")
+		ctx.Data(200, "image/png", image)
+	})
+
+	router.GET("/api/combination/:combinationId/preview/:sampleType", func(ctx *gin.Context) {
+		combinationId, err := strconv.Atoi(ctx.Param("combinationId"))
+		if err != nil {
+			log.Printf("failed to parse combination ID into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
+		if err != nil {
+			log.Printf("failed to parse sample type into integer: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		defaultCheckpoint, err := queryDefaultCheckpoint(db)
+		if err != nil {
+			log.Printf("failed to query default checkpoint: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query("SELECT sampleImage FROM loraCombinationSampleImages WHERE loraCombinationId = ? AND checkpointFilename = ? AND sampleType = ?", combinationId, defaultCheckpoint, sampleType)
+		if err != nil {
+			log.Printf("failed to query default sample image: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if !rows.Next() {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		var image []byte
+		if err := rows.Scan(&image); err != nil {
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			log.Printf("failed to scan sample image from query result: %v\n", err)
+			return
+		}
+
+		ctx.Header("Cache-Control", "public, max-age=604800")
+		ctx.Data(200, "image/png", image)
 	})
 
 	router.PUT("/api/checkpoint/:filename", func(ctx *gin.Context) {
