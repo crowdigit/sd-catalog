@@ -64,17 +64,18 @@
     <a href="{{ .LoraRow.URL }}">[View on civitai.com]</a>
     <code>{{ .LoraRow.Filename }}</code>
     <img src="/api/lora/{{ .LoraId }}/urlpreview" alt="civitai.com preview image" id="civitai-preview">
-    {{ $Join := .Join }}
     {{ $LoraId := .LoraId }}
-    {{ range $CatalogDatum := .CatalogData }}
-    <h2>{{ $CatalogDatum.CheckpointRow.Name }} - {{ $CatalogDatum.CheckpointRow.Version }}</h2>
-    {{ $CheckpointFilename := $CatalogDatum.CheckpointRow.CheckpointFilename }}
-    {{ range $AvailableSampleImageDatum := $CatalogDatum.AvailableSampleImageData }}
-    <code>{{ call $Join $AvailableSampleImageDatum.PromptListItem.Prompts }}</code>
-    {{ $PromptListId := $AvailableSampleImageDatum.PromptListItem.PromptListId }}
-    {{ range $AvailableSampleImageTypeRow := $AvailableSampleImageDatum.AvailableSampleImageTypes }}
+    {{ $Prompts := .Prompts }}
+    {{ $CheckpointSampleRows := .SampleRows }}
+    {{ range $CheckpointIndex, $Checkpoint := .Checkpoints }}
+    <h2>{{ $Checkpoint.Name }} - {{ $Checkpoint.Version }}</h2>
+    {{ $CheckpointFilename := $Checkpoint.CheckpointFilename }}
+    {{ range $PromptIndex, $Prompt := $Prompts }}
+    <code>{{ $Prompt.String }}</code>
+    {{ $PromptListId := $Prompt.Id }}
+    {{ range $SampleRow := index $CheckpointSampleRows $CheckpointIndex $PromptIndex }}
     <div class="sampleImageRow">
-    {{ range $AvailableSampleImageType := $AvailableSampleImageTypeRow }}<img src="/api/lora/{{ $LoraId }}/sampleImage/{{ $CheckpointFilename }}/{{ $PromptListId }}/{{ $AvailableSampleImageType }}" class="sampleImage">{{ end }}
+      {{ range $Sample := $SampleRow }}<img src="/api/lora/{{ $LoraId }}/sampleImage/{{ $CheckpointFilename }}/{{ $PromptListId }}/{{ $Sample }}" class="sampleImage">{{ end }}
     </div>
     {{ end }}
     {{ end }}
