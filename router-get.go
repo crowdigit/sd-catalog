@@ -28,6 +28,7 @@ var getMappings = map[string]func(AppContext) func(*gin.Context){
 	"/browse-combination":                   getBrowseCombination,
 	"/lora/:loraId":                         getLoraByLoraId,
 	"/combination/:combinationId":           getCombinationByCombinationId,
+	"/test-combination":                     getTestCombination,
 	"/api/browse/lora":                      apiBrowseLora,
 	"/api/browse/lora/:page":                apiBrowseLoraPage,
 	"/api/browse/combination":               apiBrowseCombination,
@@ -82,6 +83,13 @@ func getBrowseCombination(appCtx AppContext) func(ctx *gin.Context) {
 	}
 }
 
+func getTestCombination(appCtx AppContext) func(*gin.Context) {
+	return func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, testCombinationHtml)
+	}
+}
+
 func getLoraByLoraId(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		q := struct {
@@ -97,13 +105,6 @@ func getLoraByLoraId(appCtx AppContext) func(ctx *gin.Context) {
 			ctx.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-
-		/*
-			Checkpoint
-				Prompts
-					SampleImage Row
-						Sample Image
-		*/
 
 		type AvailableSampleImageDatum struct {
 			PromptListItem

@@ -1,6 +1,6 @@
 <html>
   <head>
-    <title>Submit New LoRA Combination</title>
+    <title>Test New LoRA Combination</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100..900&display=swap" rel="stylesheet">
@@ -35,26 +35,11 @@
       loraIdInput.name = `lora-id-${index}`;
       loraIdInput.required = true;
 
-      const loraStrengthInputLabel = document.createElement("label");
-      loraStrengthInputLabel.htmlFor = `lora-strength-${index}`;
-      loraStrengthInputLabel.textContent = "LoRA strength: ";
-
-      const loraStrengthInput = document.createElement("input");
-      loraStrengthInput.className = "lora-input";
-      loraStrengthInput.type = "number";
-      loraStrengthInput.name = `lora-strength-${index}`;
-      loraStrengthInput.required = true;
-
       const loraIdInputDiv = document.createElement("div");
       loraIdInputDiv.appendChild(loraIdInputLabel);
       loraIdInputDiv.appendChild(loraIdInput);
 
-      const loraStrengthInputDiv = document.createElement("div");
-      loraStrengthInputDiv.appendChild(loraStrengthInputLabel);
-      loraStrengthInputDiv.appendChild(loraStrengthInput);
-
       li.appendChild(loraIdInputDiv);
-      li.appendChild(loraStrengthInputDiv);
 
       ol.appendChild(li);
     }
@@ -90,7 +75,7 @@
   </head>
   <body>
     <a href="/">[Top]</a>
-    <h1>Submit New LoRA Combination</h1>
+    <h1>Test New LoRA Combination</h1>
     <form id="submit-lora-combination-form">
       <p>LoRAs</p>
       <ol id="submit-lora-combination-loras"></ol>
@@ -128,22 +113,20 @@
         const form = document.querySelector("#submit-lora-combination-form");
         form.onsubmit = () => {
           const formData = new FormData(form);
-          const [ ids, strengths, prompts ] = formData.entries().reduce(
-            ([ids, strengths, prompts], [key, value]) => {
+          const [ ids, prompts ] = formData.entries().reduce(
+            ([ids, prompts], [key, value]) => {
               if (key.startsWith("lora-id")) ids.push(parseInt(value));
-              else if (key.startsWith("lora-strength")) strengths.push(parseInt(value));
               else if (key.startsWith("lora-prompt")) prompts.push(value);
-              return [ids, strengths, prompts];
+              return [ids, prompts];
             },
             [[], [], []]);
 
           const formDataCoalesced = new FormData();
           formDataCoalesced.set("ids", JSON.stringify(ids));
-          formDataCoalesced.set("strengths", JSON.stringify(strengths));
           formDataCoalesced.set("prompts", JSON.stringify(prompts));
 
           const xhr = new XMLHttpRequest();
-          xhr.open("POST", "/api/combination");
+          xhr.open("POST", "/api/combination-test");
           xhr.send(formDataCoalesced);
           xhr.onreadystatechange = () => {
             if (xhr.readyState == XMLHttpRequest.DONE) {

@@ -27,3 +27,6 @@ var loraHtml string
 
 //go:embed combination.html
 var combinationHtml string
+
+//go:embed test-combination.html
+var testCombinationHtml string

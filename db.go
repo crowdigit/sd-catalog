@@ -192,11 +192,13 @@ ORDER BY seq ASC`
 
 	promptList := make([]string, 0, 1)
 	for rows.Next() {
-		var prompt string
+		var prompt sql.NullString
 		if err := rows.Scan(&prompt); err != nil {
 			return nil, fmt.Errorf("failed to scan prompt: %v\n", err)
 		}
-		promptList = append(promptList, prompt)
+		if prompt.Valid {
+			promptList = append(promptList, prompt.String)
+		}
 	}
 
 	return promptList, nil
@@ -473,6 +475,87 @@ loraCombinationPrompts (
 )`
 	if _, err := db.Exec(stmt12); err != nil {
 		return fmt.Errorf("failed to create lora combination table: %v\n", err)
+	}
+
+	stmt13 := `CREATE TABLE IF NOT EXISTS
+loraCombinationTests (
+	loraCombinationTestId INTEGER PRIMARY KEY ASC AUTOINCREMENT
+)`
+	if _, err := db.Exec(stmt13); err != nil {
+		return fmt.Errorf("failed to create lora combination test table: %v\n", err)
+	}
+
+	stmt14 := `CREATE TABLE IF NOT EXISTS
+loraCombinationTestComponents (
+	loraCombinationTestId REFERENCES loraCombinationTests ( loraCombinationTestId ) ON DELETE CASCADE,
+	componentSeq INTEGER NOT NULL,
+	loraId REFERENCES loras ( loraId ) ON DELETE CASCADE,
+	UNIQUE ( loraCombinationTestId, componentSeq ) ON CONFLICT REPLACE
+)`
+	if _, err := db.Exec(stmt14); err != nil {
+		return fmt.Errorf("failed to create lora combination test component table: %v\n", err)
+	}
+
+	stmt15 := `CREATE TABLE IF NOT EXISTS
+loraCombinationTestTrials (
+	loraCombinationTestId REFERENCES loraCombinationTests ( loraCombinationTestId ) ON DELETE CASCADE,
+	trialIndex INTEGER NOT NULL,
+	UNIQUE ( loraCombinationTestId, trialIndex ) ON CONFLICT FAIL
+)`
+	if _, err := db.Exec(stmt15); err != nil {
+		return fmt.Errorf("failed to create lora combination test trial table: %v\n", err)
+	}
+
+	stmt16 := `CREATE TABLE IF NOT EXISTS
+loraCombinationTestTrialParameters (
+	loraCombinationTestId INTEGER NOT NULL,
+	trialIndex INTEGER NOT NULL,
+	componentSeq INTEGER NOT NULL,
+	strength INTEGER NOT NULL,
+	FOREIGN KEY ( loraCombinationTestId, trialIndex ) REFERENCES loraCombinationTestTrials ( loraCombinationTestId, trialIndex ) ON DELETE CASCADE,
+	FOREIGN KEY ( loraCombinationTestId, componentSeq ) REFERENCES loraCombinationTestComponents ( loraCombinationTestId, componentSeq ) ON DELETE CASCADE,
+	UNIQUE ( loraCombinationTestId, trialIndex, componentSeq ) ON CONFLICT REPLACE
+)`
+	if _, err := db.Exec(stmt16); err != nil {
+		return fmt.Errorf("failed to create lora combination test trial parameter table: %v\n", err)
+	}
+
+	stmt17 := `CREATE TABLE IF NOT EXISTS
+	loraCombinationTestTrialSampleImages (
+		loraCombinationTestId INTEGER NOT NULL,
+		trialIndex INTEGER NOT NULL,
+		checkpointFilename REFERENCES checkpoints ( checkpointFilename ) ON DELETE CASCADE,
+		sampleType INTEGER NOT NULL,
+		sampleImage BLOB NOT NULL,
+		FOREIGN KEY ( loraCombinationTestId, trialIndex ) REFERENCES loraCombinationTestTrials ( loraCombinationTestId, trialIndex ) ON DELETE CASCADE,
+		UNIQUE ( loraCombinationTestId, trialIndex, checkpointFilename, sampleType ) ON CONFLICT REPLACE
+	)`
+	if _, err := db.Exec(stmt17); err != nil {
+		return fmt.Errorf("failed to create lora combination test trial sample image table: %v\n", err)
+	}
+
+	stmt18 := `CREATE TABLE IF NOT EXISTS
+loraCombinationTestPrompts (
+	loraCombinationTestId REFERENCES loraCombinationTests ( loraCombinationTestId ) ON DELETE CASCADE,
+	promptSeq INTEGER NOT NULL,
+	prompt TEXT NOT NULL,
+	UNIQUE ( loraCombinationTestId, promptSeq ) ON CONFLICT REPLACE,
+	CHECK ( prompt <> "" )
+)`
+	if _, err := db.Exec(stmt18); err != nil {
+		return fmt.Errorf("failed to create lora combination test trial sample image table: %v\n", err)
+	}
+
+	stmt19 := `CREATE TABLE IF NOT EXISTS
+loraCombinationTestTrialParameterFilters (
+	loraCombinationTestId INTEGER NOT NULL,
+	componentSeq INTEGER NOT NULL,
+	op TEXT CHECK ( op IN ( "eq", "lt", "gt", "le", "ge" ) ) NOT NULL,
+	value INTEGER NOT NULL,
+	FOREIGN KEY ( loraCombinationTestId, componentSeq ) REFERENCES loraCombinationTestComponents ( loraCombinationTestId, componentSeq ) ON DELETE CASCADE
+)`
+	if _, err := db.Exec(stmt19); err != nil {
+		return fmt.Errorf("failed to create lora combination test trial parameter table: %v\n", err)
 	}
 	return nil
 }
