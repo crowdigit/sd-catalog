@@ -16,15 +16,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/spf13/viper"
 )
-
-var comfyUiEndpoint = "192.168.123.10:8081"
-var comfyUiLoraPath = "C:\\Users\\asdf\\Tools\\ComfyUI_windows_portable\\ComfyUI\\models\\loras\\styles - artist"
-
-// var comfyUiLoraPath = "C:\\Users\\asdf\\Tools\\ComfyUI_windows_portable\\ComfyUI\\models\\loras\\testing"
 
 type PostLoraForm struct {
 	Title    string `form:"title"`
@@ -58,22 +55,146 @@ type AppContextHtmlTemplates struct {
 type AppContext struct {
 	db            *sql.DB
 	htmlTemplates AppContextHtmlTemplates
+	Config        struct {
+		ComfyuiEndpoint string `mapstructure:"COMFYUI_ENDPOINT"`
+		ComfyuiLoraPath string `mapstructure:"COMFYUI_LORA_PATH"`
+		CivitaiApiToken string `mapstructure:"CIVITAI_API_TOKEN"`
+	}
+}
+
+type ProgressReader struct {
+	io.Reader
+	chProgress chan int
+}
+
+func (r ProgressReader) Read(dst []byte) (int, error) {
+	n, err := r.Reader.Read(dst)
+	r.chProgress <- n
+	return n, err
+}
+
+var chModelDownloadQueue = make(chan ModelDownloadQueueItem, 200)
+
+func downloadModelRoutine(
+	appCtx AppContext,
+	chDownloadQueue <-chan ModelDownloadQueueItem,
+	chStopNotify <-chan struct{},
+	chStoppedNotify chan<- struct{}) {
+	lastModelId := 0
+	for loop := true; loop; {
+		select {
+		case item := <-chDownloadQueue:
+			func() {
+				file, err := os.Create(filepath.Join(appCtx.Config.ComfyuiLoraPath, item.Filename))
+				if err != nil {
+					log.Printf("failed to open file for download: %v\n", err)
+					log.Printf("Download failed for: %v\n", item)
+					return
+				}
+				defer file.Close()
+
+				req, err := http.NewRequest("GET", item.DownloadUrl, nil)
+				if err != nil {
+					log.Printf("failed to create request for model download: %v\n", err)
+					log.Printf("Download failed for: %v\n", item)
+					return
+				}
+				req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", appCtx.Config.CivitaiApiToken))
+
+				res, err := http.DefaultClient.Do(req)
+				if err != nil {
+					log.Printf("failed to send request for model download: %v\n", err)
+					log.Printf("Download failed for: %v\n", item)
+					return
+				}
+				defer res.Body.Close()
+
+				totalN, err := strconv.Atoi(res.Header.Get("Content-Length"))
+				if err != nil {
+					log.Printf("failed to read Content-Length header: %v\n", err)
+					log.Printf("Download failed for: %v\n", item)
+					return
+				}
+
+				chProgress := make(chan int, 100)
+				reader := ProgressReader{
+					Reader:     res.Body,
+					chProgress: chProgress,
+				}
+				chStopProgress := make(chan struct{})
+				lastPrintedAt := time.Now()
+				go func() {
+					downloaded := 0
+					for loop := true; loop; {
+						select {
+						case n := <-chProgress:
+							downloaded += n
+							now := time.Now()
+							if now.Sub(lastPrintedAt) > 5*time.Second {
+								log.Printf("Downloading %s: %.2f%%", item.Filename, float64(downloaded)/float64(totalN)*100)
+								lastPrintedAt = now
+							}
+						case <-chStopProgress:
+							loop = false
+						}
+					}
+				}()
+				defer func() {
+					close(chStopProgress)
+				}()
+
+				if _, err := io.Copy(file, reader); err != nil {
+					log.Printf("failed to download response body for model download: %v\n", err)
+					log.Printf("Download failed for: %v\n", item)
+					return
+				}
+
+				log.Printf("Successfully downloaded model file: %s\n", item.Filename)
+
+				if result, err := appCtx.db.Exec("DELETE FROM downloadWipV2 WHERE loraId = ?", item.LoraId); err != nil {
+					log.Printf("[WARNING] failed to delete download wip record: %v\n", err)
+					return
+				} else if n, err := result.RowsAffected(); err != nil {
+					log.Printf("[WARNING] failed to get affected rows number: %v\n", err)
+					return
+				} else if n == 0 {
+					log.Printf("[WARNING] lora download WIP record is missing\n")
+					return
+				}
+			}()
+			if lastModelId != item.ModelId {
+				delete(getModelResCache, lastModelId)
+			}
+			lastModelId = item.ModelId
+		case <-chStopNotify:
+			loop = false
+		}
+	}
+	close(chStoppedNotify)
 }
 
 func main() {
+	appCtx := AppContext{}
+
+	viper.SetConfigFile(".env")
+	viper.SetConfigType("env")
+	viper.AddConfigPath(".")
+	if err := viper.ReadInConfig(); err != nil {
+		log.Fatalf("failed to read config file: %v\n", err)
+	} else if err := viper.Unmarshal(&appCtx.Config); err != nil {
+		log.Fatalf("failed to unmarshal config file: %v\n", err)
+	}
+
 	db, err := sql.Open("sqlite3", "./test.db?_busy_timeout=1000&_journal_mode=WAL&_foreign_keys=true")
 	if err != nil {
 		log.Fatalf("failed to open DB file: %v", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(1)
+	appCtx.db = db
 
 	if err := initDB(db); err != nil {
 		log.Fatalf("failed to create DB: %v", err)
-	}
-
-	appCtx := AppContext{
-		db:            db,
-		htmlTemplates: AppContextHtmlTemplates{},
 	}
 
 	if appCtx.htmlTemplates.loraHtml, err = template.New("lora").Parse(loraHtml); err != nil {
@@ -84,6 +205,7 @@ func main() {
 
 	router := gin.Default()
 	initGetRouters(router, appCtx)
+	initPostRouters(router, appCtx)
 
 	router.POST("/api/lora", func(ctx *gin.Context) {
 		var postLoraForm PostLoraForm
@@ -125,7 +247,7 @@ func main() {
 		}
 		u := url.URL{
 			Scheme: "http",
-			Host:   comfyUiEndpoint,
+			Host:   appCtx.Config.ComfyuiEndpoint,
 			Path:   "/api/queue",
 		}
 		rows, err := db.Query("SELECT checkpointFilename FROM defaultCheckpoint LIMIT 1")
@@ -251,7 +373,7 @@ func main() {
 
 		u := url.URL{
 			Scheme: "http",
-			Host:   comfyUiEndpoint,
+			Host:   appCtx.Config.ComfyuiEndpoint,
 			Path:   "/api/queue-combination",
 		}
 		rows, err := db.Query("SELECT checkpointFilename FROM defaultCheckpoint LIMIT 1")
@@ -415,7 +537,7 @@ func main() {
 
 		u := url.URL{
 			Scheme: "http",
-			Host:   comfyUiEndpoint,
+			Host:   appCtx.Config.ComfyuiEndpoint,
 			Path:   "/api/queue-combination-test",
 		}
 		rows, err := db.Query("SELECT checkpointFilename FROM defaultCheckpoint LIMIT 1")
@@ -618,7 +740,7 @@ func main() {
 			ctx.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		if err := os.Remove(filepath.Join(comfyUiLoraPath, lora.Filename)); err != nil {
+		if err := os.Remove(filepath.Join(appCtx.Config.ComfyuiLoraPath, lora.Filename)); err != nil {
 			log.Printf("failed to delete lora file: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
@@ -630,6 +752,10 @@ func main() {
 		Addr:    "192.168.123.10:8080",
 		Handler: router.Handler(),
 	}
+
+	chStopped := make(chan struct{})
+	chStop := make(chan struct{})
+	go downloadModelRoutine(appCtx, chModelDownloadQueue, chStop, chStopped)
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -645,4 +771,7 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("error returned while waiting for HTTP server shutdown: %v", err)
 	}
+
+	close(chStop)
+	<-chStopped
 }

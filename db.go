@@ -557,5 +557,44 @@ loraCombinationTestTrialParameterFilters (
 	if _, err := db.Exec(stmt19); err != nil {
 		return fmt.Errorf("failed to create lora combination test trial parameter table: %v\n", err)
 	}
+
+	stmt21 := `CREATE TABLE IF NOT EXISTS
+lorasV2 (
+	loraId INTEGER PRIMARY KEY ASC AUTOINCREMENT,
+	name TEXT NOT NULL,
+	url TEXT NOT NULL,
+	civitaiModelId INTEGER NOT NULL,
+	civitaiVersionId INTEGER NOT NULL,
+	filename TEXT NOT NULL,
+	UNIQUE ( civitaiModelId, civitaiVersionId ) ON CONFLICT REPLACE,
+	UNIQUE ( filename ) ON CONFLICT FAIL,
+	CHECK ( filename <> "" )
+)`
+	if _, err := db.Exec(stmt21); err != nil {
+		return fmt.Errorf("failed to create lora v2 table: %v\n", err)
+	}
+
+	stmt22 := `CREATE TABLE IF NOT EXISTS
+previewV2 (
+	loraId REFERENCES lorasV2 ( loraId ) ON DELETE CASCADE,
+	seq INTEGER NOT NULL,
+	image BLOB NOT NULL,
+	type TEXT NOT NULL,
+	UNIQUE ( loraId, seq ) ON CONFLICT REPLACE,
+	CHECK ( seq != 0 AND type <> "" )
+)`
+	if _, err := db.Exec(stmt22); err != nil {
+		return fmt.Errorf("failed to create lora preview v2 table: %v\n", err)
+	}
+
+	stmt23 := `CREATE TABLE IF NOT EXISTS
+downloadWipV2 (
+	loraId INTEGER NOT NULL,
+	UNIQUE ( loraId ) ON CONFLICT FAIL,
+	FOREIGN KEY ( loraId ) REFERENCES lorasV2 ( loraId ) ON DELETE RESTRICT
+)`
+	if _, err := db.Exec(stmt23); err != nil {
+		return fmt.Errorf("failed to create lora download WIP v2 table: %v\n", err)
+	}
 	return nil
 }

@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -12,6 +17,8 @@ import (
 
 var browseLoraPageLimit = 5
 var browseCombinationLimit = 9
+var civitaiApiEndpoint = "civitai.com"
+var civitaiApiPrefix = "/api/v1"
 
 func initGetRouters(engine *gin.Engine, appCtx AppContext) {
 	for path, router := range getMappings {
@@ -28,6 +35,7 @@ var getMappings = map[string]func(AppContext) func(*gin.Context){
 	"/browse-combination":                   getBrowseCombination,
 	"/lora/:loraId":                         getLoraByLoraId,
 	"/combination/:combinationId":           getCombinationByCombinationId,
+	"/prefill":                              getPrefill,
 	"/test-combination":                     getTestCombination,
 	"/api/browse/lora":                      apiBrowseLora,
 	"/api/browse/lora/:page":                apiBrowseLoraPage,
@@ -39,6 +47,33 @@ var getMappings = map[string]func(AppContext) func(*gin.Context){
 	"/api/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId/:sampleType": apiLoraLoraIdSampleImageCheckpointFilenamePromtlistIdSampleType,
 	"/api/combination/:combinationId/sampleImage/:checkpointFilename/:sampleType": apiCombinationCombinationIdSampleImageCheckpointFilenameSampleType,
 	"/api/combination/:combinationId/preview/:sampleType":                         apiCombinationCombinationIdPreviewSampleType,
+	"/api/prefill/:modelId/version":                                               getApiPrefillModelIdVersion,
+}
+
+type CivitaiModelVersion struct {
+	Id           int      `json:"id"`
+	Name         string   `json:"name"`
+	BaseModel    string   `json:"baseModel"`
+	TrainedWords []string `json:"trainedWords"`
+	Files        []struct {
+		Name        string `json:"name"`
+		Type        string `json:"type"`
+		DownloadUrl string `json:"downloadUrl"`
+	} `json:"files"`
+	Images []struct {
+		Url string `json:"url"`
+	} `json:"images"`
+}
+
+type CivitaiGetModelResponse struct {
+	Id            int                   `json:"id"`
+	Name          string                `json:"name"`
+	ModelVersions []CivitaiModelVersion `json:"modelVersions"`
+}
+
+var getModelResCache = make(map[int]CivitaiGetModelResponse)
+
+func getModel() {
 }
 
 func getIndex(appCtx AppContext) func(ctx *gin.Context) {
@@ -170,42 +205,6 @@ func getLoraByLoraId(appCtx AppContext) func(ctx *gin.Context) {
 			checkpointPromptsSamples = append(checkpointPromptsSamples, promptsSamples)
 		}
 
-		/*
-			for _, checkpoint := range checkpoints {
-				catalogDatum := CatalogDatum{}
-				catalogDatum.CheckpointRow = checkpoint
-				for _, prompt := range prompts {
-					sampleImageTypes, err := queryAvailableSampleImageTypes(appCtx.db, q.LoraId, checkpoint.CheckpointFilename, prompt.PromptListId)
-					if err != nil {
-						log.Printf("failed to query available sample image types: %v\n", err)
-						ctx.AbortWithStatus(http.StatusBadRequest)
-						return
-					}
-					subSampleImageTypes := make([][]int, 1)
-					for _, sampleImageType := range sampleImageTypes {
-						if len(subSampleImageTypes[len(subSampleImageTypes)-1]) == 3 {
-							subSampleImageTypes = append(subSampleImageTypes, make([]int, 0, 3))
-						}
-						tail := subSampleImageTypes[len(subSampleImageTypes)-1]
-						tail = append(tail, sampleImageType)
-						subSampleImageTypes[len(subSampleImageTypes)-1] = tail
-					}
-					catalogDatum.AvailableSampleImageData = append(catalogDatum.AvailableSampleImageData, AvailableSampleImageDatum{
-						PromptListItem:            prompt,
-						AvailableSampleImageTypes: subSampleImageTypes,
-					})
-				}
-				catalogData = append(catalogData, catalogDatum)
-			}
-
-			joinPrompts := func(prompts []string) string {
-				if len(prompts) == 0 {
-					return "(empty)"
-				}
-				return strings.Join(prompts, ", ")
-			}
-		*/
-
 		prev, next, err := queryLoraRelativeBrowseData(appCtx.db, q.LoraId)
 		if err != nil {
 			log.Printf("failed to query lora relative browse data: %v\n", err)
@@ -235,28 +234,6 @@ func getLoraByLoraId(appCtx AppContext) func(ctx *gin.Context) {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		/*
-			var loraHtmlInstBuf bytes.Buffer
-			if err := appCtx.htmlTemplates.loraHtml.Execute(&loraHtmlInstBuf, struct {
-				LoraRow
-				LoraId      int
-				CatalogData []CatalogDatum
-				Join        func([]string) string
-				PrevLoraId  *int
-				NextLoraId  *int
-			}{
-				LoraId:      q.LoraId,
-				LoraRow:     *lora,
-				CatalogData: catalogData,
-				Join:        joinPrompts,
-				PrevLoraId:  prev,
-				NextLoraId:  next,
-			}); err != nil {
-				log.Printf("failed to instantiate lora html template: %v\n", err)
-				ctx.AbortWithStatus(http.StatusBadRequest)
-				return
-			}
-		*/
 
 		ctx.Header("Content-Type", "text/html")
 		ctx.Data(http.StatusOK, "text/html", loraHtmlInstBuf.Bytes())
@@ -489,7 +466,7 @@ func apiLoraLoraId(appCtx AppContext) func(ctx *gin.Context) {
 		}
 		lora, err := queryLora(appCtx.db, loraId)
 		if err != nil {
-			log.Printf("failed to query lora: %w\n", err)
+			log.Printf("failed to query lora: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
@@ -668,6 +645,7 @@ func apiCombinationCombinationIdSampleImageCheckpointFilenameSampleType(appCtx A
 		ctx.Data(200, "image/png", image)
 	}
 }
+
 func apiCombinationCombinationIdPreviewSampleType(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		combinationId, err := strconv.Atoi(ctx.Param("combinationId"))
@@ -710,5 +688,72 @@ func apiCombinationCombinationIdPreviewSampleType(appCtx AppContext) func(ctx *g
 
 		ctx.Header("Cache-Control", "public, max-age=604800")
 		ctx.Data(200, "image/png", image)
+	}
+}
+
+func getPrefill(appCtx AppContext) func(ctx *gin.Context) {
+	return func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, prefillHtml)
+	}
+}
+
+func getCivitaiModel(modelId int) (CivitaiGetModelResponse, error) {
+	if cachedRes, cached := getModelResCache[modelId]; cached {
+		return cachedRes, nil
+	}
+	getModelUrl := url.URL{
+		Scheme: "https",
+		Host:   civitaiApiEndpoint,
+		Path:   path.Join(civitaiApiPrefix, "models", fmt.Sprintf("%d", modelId)),
+	}
+
+	getModelReq, err := http.NewRequest("GET", getModelUrl.String(), nil)
+	if err != nil {
+		return CivitaiGetModelResponse{}, fmt.Errorf("failed to create civitai model request: %w", err)
+	}
+
+	getModelRes, err := http.DefaultClient.Do(getModelReq)
+	if err != nil {
+		return CivitaiGetModelResponse{}, fmt.Errorf("failed to send civitai model request: %w", err)
+	} else if getModelRes.StatusCode < 200 || getModelRes.StatusCode >= 300 {
+		return CivitaiGetModelResponse{}, fmt.Errorf("civitai responded with %d", getModelRes.StatusCode)
+	}
+
+	getModelRespBody, err := io.ReadAll(getModelRes.Body)
+	if err != nil {
+		return CivitaiGetModelResponse{}, fmt.Errorf("failed to read response body from civitai: %w", err)
+	}
+
+	var model CivitaiGetModelResponse
+	if err := json.Unmarshal(getModelRespBody, &model); err != nil {
+		return CivitaiGetModelResponse{}, fmt.Errorf("failed to parse response body from civitai: %w", err)
+	}
+
+	return model, nil
+}
+
+func getApiPrefillModelIdVersion(appCtx AppContext) func(ctx *gin.Context) {
+	return func(ctx *gin.Context) {
+		var p struct {
+			ModelId int `uri:"modelId" binding:"required"`
+		}
+		if err := ctx.BindUri(&p); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		model, err := getCivitaiModel(p.ModelId)
+		if err != nil {
+			log.Printf("failed to get civitai model: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		versions := make([]string, len(model.ModelVersions))
+		for index, modelVersion := range model.ModelVersions {
+			versions[index] = modelVersion.Name
+		}
+		ctx.JSON(http.StatusOK, versions)
 	}
 }

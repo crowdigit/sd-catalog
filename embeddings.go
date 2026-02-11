@@ -30,3 +30,6 @@ var combinationHtml string
 
 //go:embed test-combination.html
 var testCombinationHtml string
+
+//go:embed prefill.html
+var prefillHtml string

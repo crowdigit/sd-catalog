@@ -1,0 +1,9 @@
+.env
+Civitai/
+SD Catalog/
+test.db
+test.db-shm
+test.db-wal
+sd-catalog
+sd-catalog.exe
+*.sql
