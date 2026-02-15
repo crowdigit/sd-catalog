@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
 )
 
 type LoraRow struct {
@@ -42,11 +43,11 @@ type CheckpointRow struct {
 	Version            string
 }
 
-func insertLoraRow(db *sql.DB, lora Lora) (int64, error) {
+func insertLoraRow(db DB, title, url, version, filename string, prompts [][]string, urlpreview []byte) (int64, error) {
 	stmt := `INSERT INTO loras ( name, url, urlpreview, version, filename ) VALUES ( ?, ?, ?, ?, ? )`
-	result, err := db.Exec(stmt, lora.Name, lora.Url, lora.UrlPreview, lora.Version, lora.Filename)
+	result, err := db.Exec(stmt, title, url, urlpreview, version, filename)
 	if err != nil {
-		return 0, fmt.Errorf("failed to execute insert lora statement: %w", err)
+		return 0, fmt.Errorf("failed to insert lora: %w", err)
 	}
 
 	loraId, err := result.LastInsertId()
@@ -56,7 +57,7 @@ func insertLoraRow(db *sql.DB, lora Lora) (int64, error) {
 
 	promptListStmt := `INSERT INTO promptLists ( loraId, promptListId ) VALUES ( ?, ? )`
 	promptStmt := `INSERT INTO prompts ( loraId, promptListId, seq, prompt ) VALUES ( ?, ?, ?, ? )`
-	for promptListIndex, promptList := range lora.PromptLists {
+	for promptListIndex, promptList := range prompts {
 		if _, err := db.Exec(promptListStmt, loraId, promptListIndex+1); err != nil {
 			return 0, fmt.Errorf("failed to execute insert prompt list statement: %w", err)
 		}
@@ -67,17 +68,10 @@ func insertLoraRow(db *sql.DB, lora Lora) (int64, error) {
 		}
 	}
 
-	tagsStmt := `INSERT INTO tags ( loraId, tag ) VALUES ( ?, ? )`
-	for _, tag := range lora.Tags {
-		if _, err := db.Exec(tagsStmt, loraId, tag); err != nil {
-			return 0, fmt.Errorf("failed to execute insert tag statement: %w", err)
-		}
-	}
-
 	return loraId, nil
 }
 
-func insertSampleImage(db *sql.DB, loraId string, promptlistId string, checkpointFilename string, sampleType int, sampleImage []byte) error {
+func insertSampleImage(db DB, loraId int, promptlistId int, checkpointFilename string, sampleType int, sampleImage []byte) error {
 	stmt := `INSERT INTO sampleImages ( loraId, promptlistId, checkpointFilename, sampleType, sampleImage ) VALUES ( ?, ?, ?, ?, ? )`
 	_, err := db.Exec(stmt, loraId, promptlistId, checkpointFilename, sampleType, sampleImage)
 	if err != nil {
@@ -86,7 +80,7 @@ func insertSampleImage(db *sql.DB, loraId string, promptlistId string, checkpoin
 	return nil
 }
 
-func insertCheckpoint(db *sql.DB, checkpointFilename string, name string, version string) error {
+func insertCheckpoint(db DB, checkpointFilename string, name string, version string) error {
 	stmt := `INSERT INTO checkpoints ( checkpointFilename, name, version ) VALUES ( ?, ?, ? )`
 	_, err := db.Exec(stmt, checkpointFilename, name, version)
 	if err != nil {
@@ -95,11 +89,12 @@ func insertCheckpoint(db *sql.DB, checkpointFilename string, name string, versio
 	return nil
 }
 
-func queryDefaultCheckpoint(db *sql.DB) (string, error) {
+func queryDefaultCheckpoint(db DB) (string, error) {
 	rows, err := db.Query("SELECT checkpointFilename FROM defaultCheckpoint LIMIT 1")
 	if err != nil {
 		return "", fmt.Errorf("failed to select from defaultCheckpoint: %w", err)
 	}
+	defer rows.Close()
 	var defaultCheckpoint string
 	if !rows.Next() {
 		return "", fmt.Errorf("failed to scan default checkpoint: %w", err)
@@ -109,25 +104,12 @@ func queryDefaultCheckpoint(db *sql.DB) (string, error) {
 	return defaultCheckpoint, nil
 }
 
-func queryDefaultPromptListId(db *sql.DB, loraId int) (int, error) {
-	rows, err := db.Query("SELECT promptListId FROM promptLists ORDER BY promptListId ASC LIMIT 1")
-	if err != nil {
-		return 0, fmt.Errorf("failed to select from promptLists: %w", err)
-	}
-	var defaultPromptListId int
-	if !rows.Next() {
-		return 0, fmt.Errorf("failed to scan default prompt list ID: %w", err)
-	} else if rows.Scan(&defaultPromptListId); err != nil {
-		return 0, fmt.Errorf("failed to scan default prompt list ID: %w", err)
-	}
-	return defaultPromptListId, nil
-}
-
-func queryLora(db *sql.DB, loraId int) (*LoraRow, error) {
+func queryLora(db DB, loraId int) (*LoraRow, error) {
 	rows, err := db.Query("SELECT name, url, version, filename FROM loras WHERE loraId = ?", loraId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select lora: %w", err)
 	}
+	defer rows.Close()
 	var lora LoraRow
 	if !rows.Next() {
 		return nil, nil
@@ -137,7 +119,7 @@ func queryLora(db *sql.DB, loraId int) (*LoraRow, error) {
 	return &lora, nil
 }
 
-func queryLoraPrompts(db *sql.DB, loraId int) ([]PromptListItem, error) {
+func queryLoraPrompts(db DB, loraId int) ([]PromptListItem, error) {
 	stmt := `SELECT promptLists.promptListId, prompt
 FROM promptLists
 LEFT JOIN prompts
@@ -148,6 +130,7 @@ ORDER BY promptLists.promptListId ASC, prompts.seq ASC`
 	if err != nil {
 		return nil, fmt.Errorf("failed to query prompts: %w", err)
 	}
+	defer rows.Close()
 
 	promptList := make([]PromptListItem, 0, 1)
 	for rows.Next() {
@@ -178,7 +161,7 @@ ORDER BY promptLists.promptListId ASC, prompts.seq ASC`
 	return promptList, nil
 }
 
-func queryCombinationPrompts(db *sql.DB, combinationId int) ([]string, error) {
+func queryCombinationPrompts(db DB, combinationId int) ([]string, error) {
 	stmt := `SELECT prompt
 FROM loraCombinations
 LEFT JOIN loraCombinationPrompts
@@ -189,6 +172,7 @@ ORDER BY seq ASC`
 	if err != nil {
 		return nil, fmt.Errorf("failed to query combination prompts: %w", err)
 	}
+	defer rows.Close()
 
 	promptList := make([]string, 0, 1)
 	for rows.Next() {
@@ -204,7 +188,7 @@ ORDER BY seq ASC`
 	return promptList, nil
 }
 
-func queryAvailableSampleImageTypes(db *sql.DB, loraId int, checkpointFilename string, promptListId int) ([]int, error) {
+func queryAvailableSampleImageTypes(db DB, loraId int, checkpointFilename string, promptListId int) ([]int, error) {
 	stmt := `SELECT sampleType FROM sampleImages
 	WHERE loraId = ? AND checkpointFilename = ? AND promptListId = ?
 	ORDER BY sampleType ASC`
@@ -212,6 +196,7 @@ func queryAvailableSampleImageTypes(db *sql.DB, loraId int, checkpointFilename s
 	if err != nil {
 		return nil, fmt.Errorf("failed to query sample types: %w", err)
 	}
+	defer rows.Close()
 
 	sampleTypes := make([]int, 0, 9)
 	for rows.Next() {
@@ -225,7 +210,7 @@ func queryAvailableSampleImageTypes(db *sql.DB, loraId int, checkpointFilename s
 	return sampleTypes, nil
 }
 
-func queryLoraRelativeBrowseData(db *sql.DB, loraId int) (*int, *int, error) {
+func queryLoraRelativeBrowseData(db DB, loraId int) (*int, *int, error) {
 	rows, err := db.Query(`SELECT prev, next
 FROM (
 	SELECT
@@ -237,6 +222,7 @@ FROM (
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to query lora browse data: %w", err)
 	}
+	defer rows.Close()
 	if !rows.Next() {
 		return nil, nil, nil
 	}
@@ -259,7 +245,7 @@ FROM (
 	return prevCoale, nextCoale, nil
 }
 
-func queryCombinationRelativeBrowseData(db *sql.DB, combinationId int) (*int, *int, error) {
+func queryCombinationRelativeBrowseData(db DB, combinationId int) (*int, *int, error) {
 	rows, err := db.Query(`SELECT prev, next
 FROM (
 	SELECT
@@ -271,6 +257,7 @@ FROM (
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to query combination browse data: %w", err)
 	}
+	defer rows.Close()
 	if !rows.Next() {
 		return nil, nil, nil
 	}
@@ -293,7 +280,7 @@ FROM (
 	return prevCoale, nextCoale, nil
 }
 
-func queryCombinationComponents(db *sql.DB, combinationId int) ([]LoraCombinationsComponent, error) {
+func queryCombinationComponents(db DB, combinationId int) ([]LoraCombinationsComponent, error) {
 	rows, err := db.Query(`SELECT
 	loraCombinationComponents.loraId,
 	loraCombinationComponents.seq,
@@ -311,6 +298,7 @@ ORDER BY seq ASC`, combinationId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select lora components: %w", err)
 	}
+	defer rows.Close()
 	components := make([]LoraCombinationsComponent, 0, 6)
 	for rows.Next() {
 		var component LoraCombinationsComponent
@@ -322,11 +310,12 @@ ORDER BY seq ASC`, combinationId)
 	return components, nil
 }
 
-func queryCheckpoints(db *sql.DB) ([]CheckpointRow, error) {
+func queryCheckpoints(db DB) ([]CheckpointRow, error) {
 	rows, err := db.Query("SELECT checkpointFilename, name, version FROM checkpoints")
 	if err != nil {
 		return nil, fmt.Errorf("failed to select checkpoints: %w", err)
 	}
+	defer rows.Close()
 	checkpointRows := make([]CheckpointRow, 0, 1)
 	for rows.Next() {
 		var checkpointRow CheckpointRow
@@ -338,7 +327,208 @@ func queryCheckpoints(db *sql.DB) ([]CheckpointRow, error) {
 	return checkpointRows, nil
 }
 
-func initDB(db *sql.DB) error {
+func queryLoraCombinationAvailableSampleTypes(db DB, combinationId int, checkpointFilename string) ([]int, error) {
+	stmt := `SELECT sampleType
+		FROM loraCombinationSampleImages
+		WHERE
+		loraCombinationSampleImages.loraCombinationId = ?
+		AND checkpointFilename = ?
+		ORDER BY sampleType ASC`
+	rows, err := db.Query(stmt, combinationId, checkpointFilename)
+	defer rows.Close()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query available sample images: %w\n", err)
+	}
+
+	availableSampleTypes := make([]int, 0, 9)
+	for rows.Next() {
+		var sampleType int
+		if err := rows.Scan(&sampleType); err != nil {
+			return nil, fmt.Errorf("failed to scan available sample images: %w", err)
+		}
+		availableSampleTypes = append(availableSampleTypes, sampleType)
+	}
+	return availableSampleTypes, nil
+}
+
+func queryLoraCount(db DB) (int, error) {
+	rows, err := db.Query("SELECT COUNT(*) AS num FROM loras")
+	if err != nil {
+		return 0, fmt.Errorf("failed to select lora IDs: %w", err)
+	}
+	defer rows.Close()
+	rows.Next()
+	var num int
+	if err := rows.Scan(&num); err != nil {
+		return 0, fmt.Errorf("failed to scan lora ID from row: %w", err)
+	}
+	return num, nil
+}
+
+func queryLoraByPage(db DB, page int) ([]int, []string, []string, error) {
+	offset := browseLoraPageLimit * page
+	rows, err := db.Query(
+		"SELECT loraId, name, version FROM loras ORDER BY loraId ASC LIMIT ? OFFSET ?",
+		browseLoraPageLimit,
+		offset)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to select lora IDs: %w", err)
+	}
+	defer rows.Close()
+
+	loraIds := make([]int, 0, browseLoraPageLimit)
+	names := make([]string, 0, browseLoraPageLimit)
+	versions := make([]string, 0, browseLoraPageLimit)
+	for rows.Next() {
+		var loraId int64
+		var name string
+		var version string
+		if err := rows.Scan(&loraId, &name, &version); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to scan lora ID from row: %w", err)
+		}
+		loraIds = append(loraIds, int(loraId))
+		names = append(names, name)
+		versions = append(versions, version)
+	}
+	return loraIds, names, versions, nil
+}
+
+func queryLoraCombinationCount(db DB) (int, error) {
+	rows, err := db.Query("SELECT COUNT(*) AS num FROM loraCombinations")
+	if err != nil {
+		return 0, fmt.Errorf("failed to select combination IDs: %w", err)
+	}
+	defer rows.Close()
+	rows.Next()
+	var count int
+	if err := rows.Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to scan combination ID from row: %w", err)
+	}
+	return count, nil
+}
+
+func queryLoraCombinationByPage(db DB, page int) ([]int, error) {
+	offset := browseCombinationLimit * page
+	rows, err := db.Query(
+		"SELECT loraCombinationId FROM loraCombinations ORDER BY loraCombinationId ASC LIMIT ? OFFSET ?",
+		browseCombinationLimit,
+		offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select combination IDs: %w", err)
+	}
+	defer rows.Close()
+
+	combinationIds := make([]int, 0, browseCombinationLimit)
+	for rows.Next() {
+		var combinationId int64
+		if err := rows.Scan(&combinationId); err != nil {
+			return nil, fmt.Errorf("failed to scan combination ID from row: %w", err)
+		}
+		combinationIds = append(combinationIds, int(combinationId))
+	}
+
+	return combinationIds, nil
+}
+
+func queryLoraPreview(db DB, loraId int) ([]byte, error) {
+	rows, err := db.Query("SELECT urlpreview FROM loras WHERE loraId = ?", loraId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select lora: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var urlpreview []byte
+	if err := rows.Scan(&urlpreview); err != nil {
+		return nil, fmt.Errorf("failed to scan urlpreview image from query result: %v\n", err)
+	}
+	return urlpreview, nil
+}
+
+func queryLoraPreviewSampleImage(db DB, loraId, sampleType int) ([]byte, error) {
+	stmt := `SELECT sampleImage
+FROM sampleImages
+INNER JOIN defaultCheckpoint
+ON sampleImages.checkpointFilename = defaultCheckpoint.checkpointFilename
+WHERE sampleImages.loraId = ?
+AND sampleImages.sampleType = ?
+ORDER BY sampleImages.promptListId ASC
+LIMIT 1;`
+	rows, err := db.Query(stmt, loraId, sampleType)
+	if err != nil {
+		log.Printf("failed to query default sample image: %v\n", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var image []byte
+	if err := rows.Scan(&image); err != nil {
+		return nil, fmt.Errorf("failed to scan sample image from query result: %w", err)
+	}
+	return image, nil
+}
+
+func queryLoraSampleImage(db DB, loraId int, promptListId int, checkpointFilename string, sampleType int) ([]byte, error) {
+	rows, err := db.Query(
+		`SELECT sampleImage FROM sampleImages WHERE loraId = ? AND promptListId = ? AND checkpointFilename = ? AND sampleType = ? LIMIT 1`,
+		loraId, promptListId, checkpointFilename, sampleType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query sample image: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var image []byte
+	if err := rows.Scan(&image); err != nil {
+		return nil, fmt.Errorf("failed to scan sample image: %w", err)
+	}
+	return image, nil
+}
+
+func queryCombinationSampleImage(db DB, combinationId int, checkpointFilename string, sampleType int) ([]byte, error) {
+	rows, err := db.Query(
+		`SELECT sampleImage FROM loraCombinationSampleImages WHERE loraCombinationId = ? AND checkpointFilename = ? AND sampleType = ? LIMIT 1`,
+		combinationId, checkpointFilename, sampleType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query sample image: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var image []byte
+	if err := rows.Scan(&image); err != nil {
+		return nil, fmt.Errorf("failed to scan sample image: %w", err)
+	}
+	return image, nil
+}
+
+func queryCombinationPreviewSampleImage(db DB, combinationId int, sampleType int) ([]byte, error) {
+	stmt := `SELECT loraCombinationSampleImages.sampleImage
+FROM loraCombinationSampleImages
+INNER JOIN defaultCheckpoint
+ON loraCombinationSampleImages.checkpointFilename = defaultCheckpoint.checkpointFilename
+WHERE loraCombinationSampleImages.loraCombinationId = ?
+AND loraCombinationSampleImages.sampleType = ?;`
+	rows, err := db.Query(stmt, combinationId, sampleType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query default sample image: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var image []byte
+	if err := rows.Scan(&image); err != nil {
+		return nil, fmt.Errorf("failed to scan sample image from query result: %w", err)
+	}
+	return image, nil
+}
+
+func initDB(db DB) error {
 	stmt1 := `CREATE TABLE IF NOT EXISTS
 loras (
     loraId INTEGER PRIMARY KEY ASC AUTOINCREMENT,
@@ -595,6 +785,44 @@ downloadWipV2 (
 )`
 	if _, err := db.Exec(stmt23); err != nil {
 		return fmt.Errorf("failed to create lora download WIP v2 table: %v\n", err)
+	}
+
+	stmt24 := `CREATE TABLE IF NOT EXISTS
+promptListsV2 (
+	loraId REFERENCES lorasV2 ( loraId ) ON DELETE CASCADE,
+	promptListId INTEGER NOT NULL,
+	UNIQUE ( loraId, promptListId ) ON CONFLICT REPLACE
+)`
+	if _, err := db.Exec(stmt24); err != nil {
+		return fmt.Errorf("failed to create prmopt lists v2 table: %v\n", err)
+	}
+	stmt25 := `CREATE TABLE IF NOT EXISTS
+promptsV2 (
+    loraId INTEGER NOT NULL,
+    promptListId INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    FOREIGN KEY ( loraId, promptListId ) REFERENCES promptListsV2 ( loraId, promptListId ) ON DELETE CASCADE,
+    UNIQUE ( loraId, promptListId, seq ) ON CONFLICT REPLACE,
+    CHECK ( seq != 0 AND prompt <> "")
+)`
+	if _, err := db.Exec(stmt25); err != nil {
+		return fmt.Errorf("failed to execute create prompts v2 table: %w", err)
+	}
+
+	stmt26 := `CREATE TABLE IF NOT EXISTS
+sampleImagesV2 (
+    loraId INTEGER NOT NULL,
+    promptListId INTEGER NOT NULL,
+    checkpointFilename TEXT NOT NULL,
+    sampleType INTEGER NOT NULL,
+    sampleImage BLOB NOT NULL,
+    FOREIGN KEY ( loraId, promptListId ) REFERENCES promptListsV2 ( loraId, promptListId ) ON DELETE CASCADE,
+    FOREIGN KEY ( checkpointFilename ) REFERENCES checkpoints ( checkpointFilename ) ON DELETE CASCADE,
+    UNIQUE ( loraId, promptListId, checkpointFilename, sampleType ) ON CONFLICT REPLACE
+)`
+	if _, err := db.Exec(stmt26); err != nil {
+		return fmt.Errorf("failed to execute create sample images table v2: %w", err)
 	}
 	return nil
 }

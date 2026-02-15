@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8"/>
+    <title>Submit LoRA V2</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100..900&display=swap" rel="stylesheet">
+    <style>
+      html * {
+	  font-family: "Noto Sans JP", sans-serif;
+	  font-optical-sizing: auto;
+	  font-style: normal;
+      }
+      a, a:hover, a:visited, a:active {
+	  color: inherit;
+	  text-decoration: none;
+      }
+      .version {
+          margin: 1.5em;
+      }
+      .version-check {
+          margin-bottom: 0.5em;
+      }
+      .model-id-input {
+          margin-left: 1em;
+          width: 6em;
+      }
+      .promptlist {
+          margin-top: 1em;
+          margin-left: 2em;
+      }
+      .promptlist-item {
+          margin-bottom: 1em;
+      }
+      .prompt {
+          display: block;
+      }
+      .prompts {
+          margin-bottom: 0.5em;
+      }
+      .version-check * {
+          display: inline;
+      }
+    </style>
+    <script>
+{{ printf "%s" .SubmitLoraV2Script0 }}
+    </script>
+  </head>
+  <body>
+    <h1>Submit LoRA V2</h1>
+    <form id="url-form">
+      <label for="url">Civitai URL: </label>
+      <input name="url" type="url" value="" placeholder="https://civitai.com/..." required/>
+      <input name="submit" type="submit" value="Submit"/>
+      <br/>
+    </form>
+    <form id="version-form">
+      <label for="modelId">Model ID: </label>
+      <input id="modelid-input" name="modelId" type="number" required/>
+      <br/>
+    </form>
+    <script>
+      const urlForm = document.querySelector("#url-form");
+      const versionForm = document.querySelector("#version-form");
+      initSubmitUrlForm(urlForm, versionForm);
+    </script>
+  </body>
+</html>

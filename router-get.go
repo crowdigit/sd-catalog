@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -29,13 +28,13 @@ func initGetRouters(engine *gin.Engine, appCtx AppContext) {
 var getMappings = map[string]func(AppContext) func(*gin.Context){
 	"/":                                     getIndex,
 	"/submit-lora":                          getSubmitLora,
+	"/submit-lora-v2":                       getSubmitLoraV2,
 	"/submit-lora-combination":              getSubmitLoraCombination,
 	"/submit-checkpoint":                    getSubmitCheckpoint,
 	"/browse-lora":                          getBrowseLora,
 	"/browse-combination":                   getBrowseCombination,
 	"/lora/:loraId":                         getLoraByLoraId,
 	"/combination/:combinationId":           getCombinationByCombinationId,
-	"/prefill":                              getPrefill,
 	"/test-combination":                     getTestCombination,
 	"/api/browse/lora":                      apiBrowseLora,
 	"/api/browse/lora/:page":                apiBrowseLoraPage,
@@ -47,7 +46,7 @@ var getMappings = map[string]func(AppContext) func(*gin.Context){
 	"/api/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId/:sampleType": apiLoraLoraIdSampleImageCheckpointFilenamePromtlistIdSampleType,
 	"/api/combination/:combinationId/sampleImage/:checkpointFilename/:sampleType": apiCombinationCombinationIdSampleImageCheckpointFilenameSampleType,
 	"/api/combination/:combinationId/preview/:sampleType":                         apiCombinationCombinationIdPreviewSampleType,
-	"/api/prefill/:modelId/version":                                               getApiPrefillModelIdVersion,
+	"/api/v2/civitai/model/:modelId/version":                                      getApiV2CivitaiModelModelIdVersion,
 }
 
 type CivitaiModelVersion struct {
@@ -72,9 +71,6 @@ type CivitaiGetModelResponse struct {
 }
 
 var getModelResCache = make(map[int]CivitaiGetModelResponse)
-
-func getModel() {
-}
 
 func getIndex(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
@@ -135,7 +131,7 @@ func getLoraByLoraId(appCtx AppContext) func(ctx *gin.Context) {
 			return
 		}
 
-		lora, err := queryLora(appCtx.db, q.LoraId)
+		lora, err := queryLora(appCtx.dbr, q.LoraId)
 		if lora == nil {
 			ctx.AbortWithStatus(http.StatusNotFound)
 			return
@@ -150,14 +146,14 @@ func getLoraByLoraId(appCtx AppContext) func(ctx *gin.Context) {
 			AvailableSampleImageData []AvailableSampleImageDatum
 		}
 
-		checkpoints, err := queryCheckpoints(appCtx.db)
+		checkpoints, err := queryCheckpoints(appCtx.dbr)
 		if err != nil {
 			log.Printf("failed to query checkpoints: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 
-		promptList, err := queryLoraPrompts(appCtx.db, q.LoraId)
+		promptList, err := queryLoraPrompts(appCtx.dbr, q.LoraId)
 		if err != nil {
 			log.Printf("failed to query prompts: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
@@ -186,7 +182,7 @@ func getLoraByLoraId(appCtx AppContext) func(ctx *gin.Context) {
 		for _, checkpoint := range checkpoints {
 			promptsSamples := make([]SampleRows, 0, len(prompts))
 			for _, promptListItem := range promptList {
-				sampleImageTypes, err := queryAvailableSampleImageTypes(appCtx.db, q.LoraId, checkpoint.CheckpointFilename, promptListItem.PromptListId)
+				sampleImageTypes, err := queryAvailableSampleImageTypes(appCtx.dbr, q.LoraId, checkpoint.CheckpointFilename, promptListItem.PromptListId)
 				if err != nil {
 					log.Printf("failed to query available sample image types: %v\n", err)
 					ctx.AbortWithStatus(http.StatusBadRequest)
@@ -205,7 +201,7 @@ func getLoraByLoraId(appCtx AppContext) func(ctx *gin.Context) {
 			checkpointPromptsSamples = append(checkpointPromptsSamples, promptsSamples)
 		}
 
-		prev, next, err := queryLoraRelativeBrowseData(appCtx.db, q.LoraId)
+		prev, next, err := queryLoraRelativeBrowseData(appCtx.dbr, q.LoraId)
 		if err != nil {
 			log.Printf("failed to query lora relative browse data: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
@@ -250,21 +246,21 @@ func getCombinationByCombinationId(appCtx AppContext) func(ctx *gin.Context) {
 			return
 		}
 
-		components, err := queryCombinationComponents(appCtx.db, q.CombinationId)
+		components, err := queryCombinationComponents(appCtx.dbr, q.CombinationId)
 		if err != nil {
 			log.Printf("failed to query lora components: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 
-		checkpoints, err := queryCheckpoints(appCtx.db)
+		checkpoints, err := queryCheckpoints(appCtx.dbr)
 		if err != nil {
 			log.Printf("failed to query checkpoints: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 
-		prompts, err := queryCombinationPrompts(appCtx.db, q.CombinationId)
+		prompts, err := queryCombinationPrompts(appCtx.dbr, q.CombinationId)
 		if err != nil {
 			log.Printf("failed to query prompts: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
@@ -272,42 +268,25 @@ func getCombinationByCombinationId(appCtx AppContext) func(ctx *gin.Context) {
 		}
 
 		sampleTypes := make([][][]int, 0, 1)
+		const rowSize = 3
 		for _, checkpoint := range checkpoints {
-			stmt := `SELECT sampleType
-		FROM loraCombinationSampleImages
-		WHERE
-		loraCombinationSampleImages.loraCombinationId = ?
-		AND checkpointFilename = ?
-		ORDER BY sampleType ASC`
-			rows, err := appCtx.db.Query(stmt, q.CombinationId, checkpoint.CheckpointFilename)
+			ts, err := queryLoraCombinationAvailableSampleTypes(appCtx.dbr, q.CombinationId, checkpoint.CheckpointFilename)
 			if err != nil {
-				log.Printf("failed to query available sample images: %v\n", err)
+				log.Printf("failed to query available sample types: %v\n", err)
 				ctx.AbortWithStatus(http.StatusBadRequest)
 				return
 			}
-			sampleTypeRows := make([][]int, 0, 9)
-			sampleTypeRows = append(sampleTypeRows, make([]int, 0, 3))
-			for rows.Next() {
-				var sampleType int
-				if err := rows.Scan(&sampleType); err != nil {
-					log.Printf("failed to scan available sample images: %v\n", err)
-					ctx.AbortWithStatus(http.StatusBadRequest)
-					return
-				}
-				tail := sampleTypeRows[len(sampleTypeRows)-1]
-				if len(tail) == 3 {
-					tail = make([]int, 0, 3)
-					sampleTypeRows = append(sampleTypeRows, tail)
-				}
-				tail = append(tail, sampleType)
-				sampleTypeRows[len(sampleTypeRows)-1] = tail
+			rowNum := (len(ts) + rowSize - 1) / 3
+			rows := make([][]int, rowNum)
+			for i := 0; i < rowNum; i += 1 {
+				rows[i] = ts[i*rowSize : min((i+1)*rowSize, len(ts))]
 			}
-			sampleTypes = append(sampleTypes, sampleTypeRows)
+			sampleTypes = append(sampleTypes, rows)
 		}
 
 		promptsJoint := strings.Join(prompts, ", ")
 
-		prev, next, err := queryCombinationRelativeBrowseData(appCtx.db, q.CombinationId)
+		prev, next, err := queryCombinationRelativeBrowseData(appCtx.dbr, q.CombinationId)
 		if err != nil {
 			log.Printf("failed to query lora relative browse data: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
@@ -350,54 +329,34 @@ func getCombinationByCombinationId(appCtx AppContext) func(ctx *gin.Context) {
 
 func apiBrowseLora(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		rows, err := appCtx.db.Query("SELECT COUNT(*) AS num FROM loras")
+		count, err := queryLoraCount(appCtx.dbr)
 		if err != nil {
-			log.Printf("failed to select lora IDs: %v\n", err)
+			log.Printf("failed to query lora count: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		rows.Next()
-		var num int
-		if err := rows.Scan(&num); err != nil {
-			log.Printf("failed to scan lora ID from row: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-		ctx.JSON(http.StatusOK, gin.H{"maxPage": (num - 1) / browseLoraPageLimit})
+		ctx.JSON(http.StatusOK, gin.H{"maxPage": (count - 1) / browseLoraPageLimit})
 	}
 }
 
 func apiBrowseLoraPage(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		page, err := strconv.Atoi(ctx.Param("page"))
-		if err != nil {
-			log.Printf("failed to parse page into integer: %v\n", err)
+		var u struct {
+			Page int `uri:"page"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		offset := browseLoraPageLimit * page
-		rows, err := appCtx.db.Query("SELECT loraId, name, version FROM loras ORDER BY loraId ASC LIMIT ? OFFSET ?", browseLoraPageLimit, offset)
+
+		loraIds, names, versions, err := queryLoraByPage(appCtx.dbr, u.Page)
 		if err != nil {
-			log.Printf("failed to select lora IDs: %v\n", err)
+			log.Printf("failed to query lora by page: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		loraIds := make([]int, 0, browseLoraPageLimit)
-		names := make([]string, 0, browseLoraPageLimit)
-		versions := make([]string, 0, browseLoraPageLimit)
-		for rows.Next() {
-			var loraId int64
-			var name string
-			var version string
-			if err := rows.Scan(&loraId, &name, &version); err != nil {
-				log.Printf("failed to scan lora ID from row: %v\n", err)
-				ctx.AbortWithStatus(http.StatusBadRequest)
-				return
-			}
-			loraIds = append(loraIds, int(loraId))
-			names = append(names, name)
-			versions = append(versions, version)
-		}
+
 		ctx.JSON(http.StatusOK, gin.H{
 			"loraIds":  loraIds,
 			"names":    names,
@@ -408,48 +367,34 @@ func apiBrowseLoraPage(appCtx AppContext) func(ctx *gin.Context) {
 
 func apiBrowseCombination(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		rows, err := appCtx.db.Query("SELECT COUNT(*) AS num FROM loraCombinations")
+		count, err := queryLoraCombinationCount(appCtx.dbr)
 		if err != nil {
-			log.Printf("failed to select combination IDs: %v\n", err)
+			log.Printf("failed to query lora combination count: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		rows.Next()
-		var num int
-		if err := rows.Scan(&num); err != nil {
-			log.Printf("failed to scan combination ID from row: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-		ctx.JSON(http.StatusOK, gin.H{"maxPage": (num - 1) / browseCombinationLimit})
+		ctx.JSON(http.StatusOK, gin.H{"maxPage": (count - 1) / browseCombinationLimit})
 	}
 }
 
 func apiBrowseCombinationPage(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		page, err := strconv.Atoi(ctx.Param("page"))
-		if err != nil {
-			log.Printf("failed to parse page into integer: %v\n", err)
+		var u struct {
+			Page int `uri:"page"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		offset := browseCombinationLimit * page
-		rows, err := appCtx.db.Query("SELECT loraCombinationId FROM loraCombinations ORDER BY loraCombinationId ASC LIMIT ? OFFSET ?", browseCombinationLimit, offset)
+
+		combinationIds, err := queryLoraCombinationByPage(appCtx.dbr, u.Page)
 		if err != nil {
-			log.Printf("failed to select combination IDs: %v\n", err)
+			log.Printf("failed to query lora combinations by page: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		combinationIds := make([]int, 0, browseCombinationLimit)
-		for rows.Next() {
-			var combinationId int64
-			if err := rows.Scan(&combinationId); err != nil {
-				log.Printf("failed to scan combination ID from row: %v\n", err)
-				ctx.AbortWithStatus(http.StatusBadRequest)
-				return
-			}
-			combinationIds = append(combinationIds, int(combinationId))
-		}
+
 		ctx.JSON(http.StatusOK, gin.H{
 			"combinationIds": combinationIds,
 		})
@@ -458,13 +403,15 @@ func apiBrowseCombinationPage(appCtx AppContext) func(ctx *gin.Context) {
 
 func apiLoraLoraId(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		loraId, err := strconv.Atoi(ctx.Param("loraId"))
-		if err != nil {
-			log.Printf("failed to parse lora ID into integer: %v\n", err)
+		var u struct {
+			LoraId int `uri:"loraId" binding:"required"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		lora, err := queryLora(appCtx.db, loraId)
+		lora, err := queryLora(appCtx.dbr, u.LoraId)
 		if err != nil {
 			log.Printf("failed to query lora: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
@@ -477,29 +424,22 @@ func apiLoraLoraId(appCtx AppContext) func(ctx *gin.Context) {
 
 func apiLoraLoraIdUrlpreview(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		loraId, err := strconv.Atoi(ctx.Param("loraId"))
-		if err != nil {
-			log.Printf("failed to parse lora ID into integer: %v\n", err)
+		var u struct {
+			LoraId int `uri:"loraId" binding:"required"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 
-		rows, err := appCtx.db.Query("SELECT urlpreview FROM loras WHERE loraId = ?", loraId)
+		urlpreview, err := queryLoraPreview(appCtx.dbr, u.LoraId)
 		if err != nil {
-			log.Printf("failed to select lora: %v\n", err)
+			log.Printf("failed to query lora preview: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
-		}
-
-		if !rows.Next() {
+		} else if urlpreview == nil {
 			ctx.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-
-		var urlpreview []byte
-		if err := rows.Scan(&urlpreview); err != nil {
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			log.Printf("failed to scan urlpreview image from query result: %v\n", err)
 			return
 		}
 
@@ -510,48 +450,23 @@ func apiLoraLoraIdUrlpreview(appCtx AppContext) func(ctx *gin.Context) {
 
 func apiLoraLoraIdPreviewSampleImage(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		loraId, err := strconv.Atoi(ctx.Param("loraId"))
-		if err != nil {
-			log.Printf("failed to parse lora ID into integer: %v\n", err)
+		var u struct {
+			LoraId     int `uri:"loraId" binding:"required"`
+			SampleType int `uri:"sampleType" binding:"required"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 
-		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
+		image, err := queryLoraPreviewSampleImage(appCtx.dbr, u.LoraId, u.SampleType)
 		if err != nil {
-			log.Printf("failed to parse sample type into integer: %v\n", err)
+			log.Printf("failed to query lora preview sample image: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
-		}
-
-		defaultCheckpoint, err := queryDefaultCheckpoint(appCtx.db)
-		if err != nil {
-			log.Printf("failed to query default checkpoint: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-
-		defaultPromptListId, err := queryDefaultPromptListId(appCtx.db, loraId)
-		if err != nil {
-			log.Printf("failed to query default prompt list ID: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-
-		rows, err := appCtx.db.Query("SELECT sampleImage FROM sampleImages WHERE loraId = ? AND promptListId = ? AND checkpointFilename = ? AND sampleType = ?", loraId, defaultPromptListId, defaultCheckpoint, sampleType)
-		if err != nil {
-			log.Printf("failed to query default sample image: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-		if !rows.Next() {
+		} else if image == nil {
 			ctx.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		var image []byte
-		if err := rows.Scan(&image); err != nil {
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			log.Printf("failed to scan sample image from query result: %v\n", err)
 			return
 		}
 
@@ -562,42 +477,25 @@ func apiLoraLoraIdPreviewSampleImage(appCtx AppContext) func(ctx *gin.Context) {
 
 func apiLoraLoraIdSampleImageCheckpointFilenamePromtlistIdSampleType(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		loraId, err := strconv.Atoi(ctx.Param("loraId"))
-		if err != nil {
-			log.Printf("failed to parse lora ID into integer: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
+		var u struct {
+			LoraId             int    `uri:"loraId" binding:"required"`
+			CheckpointFilename string `uri:"checkpointFilename" binding:"required"`
+			PromptListId       int    `uri:"promptlistId" binding:"required"`
+			SampleType         int    `uri:"sampleType" binding:"required"`
 		}
-		checkpointFilename := ctx.Param("checkpointFilename")
-		promptListId, err := strconv.Atoi(ctx.Param("promptlistId"))
-		if err != nil {
-			log.Printf("failed to parse prompt list ID into integer: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
-		if err != nil {
-			log.Printf("failed to parse sample type into integer: %v\n", err)
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 
-		rows, err := appCtx.db.Query(
-			`SELECT sampleImage FROM sampleImages WHERE loraId = ? AND promptListId = ? AND checkpointFilename = ? AND sampleType = ? LIMIT 1`,
-			loraId, promptListId, checkpointFilename, sampleType)
+		image, err := queryLoraSampleImage(appCtx.dbr, u.LoraId, u.PromptListId, u.CheckpointFilename, u.SampleType)
 		if err != nil {
-			log.Printf("failed to query sample image: %v\n", err)
+			log.Printf("failed to query lora sample image: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
-		}
-		if !rows.Next() {
+		} else if image == nil {
 			ctx.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		var image []byte
-		if err := rows.Scan(&image); err != nil {
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			log.Printf("failed to scan sample image: %v\n", err)
 			return
 		}
 
@@ -608,36 +506,24 @@ func apiLoraLoraIdSampleImageCheckpointFilenamePromtlistIdSampleType(appCtx AppC
 
 func apiCombinationCombinationIdSampleImageCheckpointFilenameSampleType(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		combinationId, err := strconv.Atoi(ctx.Param("combinationId"))
-		if err != nil {
-			log.Printf("failed to parse combination ID into integer: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
+		var u struct {
+			CombinationId      int    `uri:"combinationId" binding:"required"`
+			CheckpointFilename string `uri:"checkpointFilename" binding:"required"`
+			SampleType         int    `uri:"sampleType" binding:"required"`
 		}
-		checkpointFilename := ctx.Param("checkpointFilename")
-		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
-		if err != nil {
-			log.Printf("failed to parse sample type into integer: %v\n", err)
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 
-		rows, err := appCtx.db.Query(
-			`SELECT sampleImage FROM loraCombinationSampleImages WHERE loraCombinationId = ? AND checkpointFilename = ? AND sampleType = ? LIMIT 1`,
-			combinationId, checkpointFilename, sampleType)
+		image, err := queryCombinationSampleImage(appCtx.dbr, u.CombinationId, u.CheckpointFilename, u.SampleType)
 		if err != nil {
-			log.Printf("failed to query sample image: %v\n", err)
+			log.Printf("failed to query combination sample image: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
-		}
-		if !rows.Next() {
+		} else if image == nil {
 			ctx.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		var image []byte
-		if err := rows.Scan(&image); err != nil {
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			log.Printf("failed to scan sample image: %v\n", err)
 			return
 		}
 
@@ -648,41 +534,23 @@ func apiCombinationCombinationIdSampleImageCheckpointFilenameSampleType(appCtx A
 
 func apiCombinationCombinationIdPreviewSampleType(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
-		combinationId, err := strconv.Atoi(ctx.Param("combinationId"))
-		if err != nil {
-			log.Printf("failed to parse combination ID into integer: %v\n", err)
+		var u struct {
+			CombinationId int `uri:"combinationId" binding:"required"`
+			SampleType    int `uri:"sampleType" binding:"required"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 
-		sampleType, err := strconv.Atoi(ctx.Param("sampleType"))
+		image, err := queryCombinationPreviewSampleImage(appCtx.dbr, u.CombinationId, u.SampleType)
 		if err != nil {
-			log.Printf("failed to parse sample type into integer: %v\n", err)
+			log.Printf("failed to query combination preview sample image: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
-		}
-
-		defaultCheckpoint, err := queryDefaultCheckpoint(appCtx.db)
-		if err != nil {
-			log.Printf("failed to query default checkpoint: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-
-		rows, err := appCtx.db.Query("SELECT sampleImage FROM loraCombinationSampleImages WHERE loraCombinationId = ? AND checkpointFilename = ? AND sampleType = ?", combinationId, defaultCheckpoint, sampleType)
-		if err != nil {
-			log.Printf("failed to query default sample image: %v\n", err)
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-		if !rows.Next() {
+		} else if image == nil {
 			ctx.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		var image []byte
-		if err := rows.Scan(&image); err != nil {
-			ctx.AbortWithStatus(http.StatusBadRequest)
-			log.Printf("failed to scan sample image from query result: %v\n", err)
 			return
 		}
 
@@ -691,10 +559,10 @@ func apiCombinationCombinationIdPreviewSampleType(appCtx AppContext) func(ctx *g
 	}
 }
 
-func getPrefill(appCtx AppContext) func(ctx *gin.Context) {
+func getSubmitLoraV2(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		ctx.Header("Content-Type", "text/html")
-		ctx.String(http.StatusOK, prefillHtml)
+		ctx.String(http.StatusOK, appCtx.htmlTemplates.submitLoraV2Html)
 	}
 }
 
@@ -733,7 +601,7 @@ func getCivitaiModel(modelId int) (CivitaiGetModelResponse, error) {
 	return model, nil
 }
 
-func getApiPrefillModelIdVersion(appCtx AppContext) func(ctx *gin.Context) {
+func getApiV2CivitaiModelModelIdVersion(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		var p struct {
 			ModelId int `uri:"modelId" binding:"required"`
@@ -750,10 +618,21 @@ func getApiPrefillModelIdVersion(appCtx AppContext) func(ctx *gin.Context) {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		versions := make([]string, len(model.ModelVersions))
+		versionNames := make([]string, len(model.ModelVersions))
+		versionIds := make([]int, len(model.ModelVersions))
+		promptList := make([][]string, len(model.ModelVersions))
 		for index, modelVersion := range model.ModelVersions {
-			versions[index] = modelVersion.Name
+			versionNames[index] = modelVersion.Name
+			versionIds[index] = modelVersion.Id
+			if modelVersion.TrainedWords == nil {
+				modelVersion.TrainedWords = make([]string, 0)
+			}
+			promptList[index] = modelVersion.TrainedWords
 		}
-		ctx.JSON(http.StatusOK, versions)
+		ctx.JSON(http.StatusOK, gin.H{
+			"versionNames": versionNames,
+			"versionIds":   versionIds,
+			"promptList":   promptList,
+		})
 	}
 }
