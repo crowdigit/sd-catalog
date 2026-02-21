@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Combination {{ .CombinationId }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100..900&display=swap" rel="stylesheet">
+  <style>
+    html *:not(code) {
+      font-family: "Noto Sans JP", sans-serif;
+      font-optical-sizing: auto;
+      font-style: normal;
+    }
+    a, a:hover, a:visited, a:active {
+      color: inherit;
+      text-decoration: none;
+    }
+  </style>
+  <script>
+    function initForm() {
+    }
+  </script>
+</head>
+<body>
+  <h1>Submit Prompt</h1>
+  <h2>By AI Booru</h2>
+  <form id="form-aibooru">
+    <input name="url" type="url" value=""/>
+  </form>
+  <h2>Prompts</h2>
+  <form id="form-prompts">
+  </form>
+</body>
+</html>

@@ -1,6 +1,7 @@
 .env
 Civitai/
 SD Catalog/
+AI Booru/
 test.db
 test.db-shm
 test.db-wal

@@ -20,9 +20,11 @@ import (
 )
 
 type AppContextHtmlTemplates struct {
-	loraHtml         *template.Template
-	combinationHtml  *template.Template
-	submitLoraV2Html string
+	loraHtml          *template.Template
+	loraHtmlV2        *template.Template
+	combinationHtml   *template.Template
+	combinationV2Html *template.Template
+	submitLoraV2Html  string
 }
 
 type DB interface {
@@ -100,7 +102,11 @@ func main() {
 
 	if appCtx.htmlTemplates.loraHtml, err = template.New("lora").Parse(loraHtml); err != nil {
 		log.Fatalf("failed to parse lora html template: %v\n", err)
+	} else if appCtx.htmlTemplates.loraHtmlV2, err = template.New("lora").Parse(loraHtmlV2); err != nil {
+		log.Fatalf("failed to parse lora html V2 template: %v\n", err)
 	} else if appCtx.htmlTemplates.combinationHtml, err = template.New("lora").Parse(combinationHtml); err != nil {
+		log.Fatalf("failed to parse lora html template: %v\n", err)
+	} else if appCtx.htmlTemplates.combinationV2Html, err = template.New("lora").Parse(combinationV2Html); err != nil {
 		log.Fatalf("failed to parse lora html template: %v\n", err)
 	}
 

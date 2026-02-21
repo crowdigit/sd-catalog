@@ -51,7 +51,7 @@
     <h1>Submit LoRA V2</h1>
     <form id="url-form">
       <label for="url">Civitai URL: </label>
-      <input name="url" type="url" value="" placeholder="https://civitai.com/..." required/>
+      <input id="url-form-url-input" name="url" type="url" value="" placeholder="https://civitai.com/..." required/>
       <input name="submit" type="submit" value="Submit"/>
       <br/>
     </form>
@@ -61,9 +61,12 @@
       <br/>
     </form>
     <script>
-      const urlForm = document.querySelector("#url-form");
-      const versionForm = document.querySelector("#version-form");
-      initSubmitUrlForm(urlForm, versionForm);
+      (() => {
+          const urlForm = document.querySelector("#url-form");
+          const versionForm = document.querySelector("#version-form");
+          const url = new URL(location.href);
+          initSubmitUrlForm(urlForm, versionForm);
+      })();
     </script>
   </body>
 </html>

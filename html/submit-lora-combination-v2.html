@@ -1,0 +1,163 @@
+<html>
+  <head>
+    <title>Submit New LoRA Combination</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100..900&display=swap" rel="stylesheet">
+  <style>
+    html * {
+      font-family: "Noto Sans JP", sans-serif;
+      font-optical-sizing: auto;
+      font-style: normal;
+    }
+    .lora-input {
+      width: 100px;
+    }
+    .lora-combination-component-item, .lora-combination-prompt-item {
+      padding: 10px;
+    }
+  </style>
+  <script>
+    function addLoraCombinationComponent(ol) {
+      const loras = ol.querySelectorAll(".lora-combination-component-item");
+      const index = loras.length + 1;
+
+      const li = document.createElement("li");
+      li.className = "lora-combination-component-item";
+
+      const loraIdInputLabel = document.createElement("label");
+      loraIdInputLabel.htmlFor = `lora-id-${index}`;
+      loraIdInputLabel.textContent = "LoRA ID: ";
+
+      const loraIdInput = document.createElement("input");
+      loraIdInput.className = "lora-input";
+      loraIdInput.type = "number";
+      loraIdInput.name = `lora-id-${index}`;
+      loraIdInput.required = true;
+
+      const loraStrengthInputLabel = document.createElement("label");
+      loraStrengthInputLabel.htmlFor = `lora-strength-${index}`;
+      loraStrengthInputLabel.textContent = "LoRA strength: ";
+
+      const loraStrengthInput = document.createElement("input");
+      loraStrengthInput.className = "lora-input";
+      loraStrengthInput.type = "number";
+      loraStrengthInput.name = `lora-strength-${index}`;
+      loraStrengthInput.required = true;
+
+      const loraIdInputDiv = document.createElement("div");
+      loraIdInputDiv.appendChild(loraIdInputLabel);
+      loraIdInputDiv.appendChild(loraIdInput);
+
+      const loraStrengthInputDiv = document.createElement("div");
+      loraStrengthInputDiv.appendChild(loraStrengthInputLabel);
+      loraStrengthInputDiv.appendChild(loraStrengthInput);
+
+      li.appendChild(loraIdInputDiv);
+      li.appendChild(loraStrengthInputDiv);
+
+      ol.appendChild(li);
+    }
+
+    function removeLoraCombinationComponent(ol) {
+      const components = document.querySelectorAll(".lora-combination-component-item");
+      if (components.length === 1) return;
+      components[components.length - 1].remove();
+    }
+
+    function addLoraCombinationPrompt(ol) {
+      const prompts = ol.querySelector(".lora-combination-prompt-item");
+      const index = (prompts?.length ?? 0) + 1;
+
+      const li = document.createElement("li");
+      li.className = "lora-combination-prompt-item";
+
+      const promptInput = document.createElement("input");
+      promptInput.type = "text";
+      promptInput.name = `lora-prompt-${index}`;
+      promptInput.required = true;
+
+      li.appendChild(promptInput);
+      ol.appendChild(li);
+    }
+
+    function removeLoraCombinationPrompt(ol) {
+      const prompts = document.querySelectorAll(".lora-combination-prompt-item");
+      if (prompts.length === 0) return;
+      prompts[prompts.length - 1].remove();
+    }
+  </script>
+  </head>
+  <body>
+    <a href="/">[Top]</a>
+    <h1>Submit New LoRA Combination</h1>
+    <form id="submit-lora-combination-form">
+      <p>LoRAs</p>
+      <ol id="submit-lora-combination-loras"></ol>
+      <button id="add-lora-combination-component" type="button">Add</button>
+      <button id="remove-lora-combination-component" type="button">Remove</button>
+      <p>Prompts</p>
+      <ol id="submit-lora-combination-prompts"></ol>
+      <button id="add-lora-combination-prompt" type="button">Add</button>
+      <button id="remove-lora-combination-prompt" type="button">Remove</button>
+      <input id="submit-lora-submitbutton" type="submit" value="Submit" style="display: block; margin-top: 2em;">
+    </form>
+    <script>
+      (() => {
+        const loras = document.querySelector("#submit-lora-combination-loras");
+        addLoraCombinationComponent(loras);
+        const addLoraComponent = document.querySelector("#add-lora-combination-component");
+        addLoraComponent.addEventListener("click", (event) => {
+          addLoraCombinationComponent(loras);
+        });
+        removeLoraComponent = document.querySelector("#remove-lora-combination-component");
+        removeLoraComponent.addEventListener("click", (event) => {
+          removeLoraCombinationComponent(loras);
+        });
+
+        const prompts = document.querySelector("#submit-lora-combination-prompts");
+        const addPrompt = document.querySelector("#add-lora-combination-prompt");
+        addPrompt.addEventListener("click", (event) => {
+          addLoraCombinationPrompt(prompts);
+        });
+        const removePrompt = document.querySelector("#remove-lora-combination-prompt");
+        removePrompt.addEventListener("click", (event) => {
+          removeLoraCombinationPrompt(prompts);
+        });
+
+        const form = document.querySelector("#submit-lora-combination-form");
+        form.onsubmit = () => {
+          const formData = new FormData(form);
+          const [ ids, strengths, prompts ] = formData.entries().reduce(
+            ([ids, strengths, prompts], [key, value]) => {
+              if (key.startsWith("lora-id")) ids.push(parseInt(value));
+              else if (key.startsWith("lora-strength")) strengths.push(parseInt(value));
+              else if (key.startsWith("lora-prompt")) prompts.push(value);
+              return [ids, strengths, prompts];
+            },
+            [[], [], []]);
+
+          const formDataCoalesced = new FormData();
+          formDataCoalesced.set("ids", JSON.stringify(ids));
+          formDataCoalesced.set("strengths", JSON.stringify(strengths));
+          formDataCoalesced.set("prompts", JSON.stringify(prompts));
+
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/v2/combination");
+          xhr.send(formDataCoalesced);
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState == XMLHttpRequest.DONE) {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                alert("Combination successfully submitted")
+                form.reset();
+              } else {
+                alert("Failed to submit combination");
+              }
+            }
+          }
+          return false;
+        }
+      })();
+    </script>
+  </body>
+</html>

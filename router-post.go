@@ -2,23 +2,37 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
 var postMappings = map[string]func(AppContext) func(*gin.Context){
-	"/api/lora":             postApiLora,
-	"/api/combination":      postApiCombination,
-	"/api/combination-test": postApiCombinationTest,
-	"/api/v2/lora/:modelId": postApiV2LoraModelId,
+	"/api/lora":                     postApiLora,
+	"/api/combination":              postApiCombination,
+	"/api/combination-test":         postApiCombinationTest,
+	"/api/v2/lora/:modelId":         postApiV2LoraModelId,
+	"/api/v2/fix":                   postFix,
+	"/api/v2/combination":           postApiV2Combination,
+	"/api/v2/random-prompt/aibooru": postApiV2RandomPromptAiBooru,
+}
+
+func postFix(appCtx AppContext) func(*gin.Context) {
+	return func(ctx *gin.Context) {
+		ctx.Status(200)
+	}
+
 }
 
 func initPostRouters(engine *gin.Engine, appCtx AppContext) {
@@ -38,7 +52,8 @@ type ModelDownloadQueueItem struct {
 func postApiV2LoraModelId(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		var u struct {
-			ModelId int `uri:"modelId" binding:"required"`
+			ModelId int `uri:"modelId" bind
+ing:"required"`
 		}
 		var f struct {
 			VersionIds  string `form:"versionIds" binding:"required"`
@@ -53,6 +68,7 @@ func postApiV2LoraModelId(appCtx AppContext) func(ctx *gin.Context) {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
+
 		var versionIds []int
 		var promptLists [][][]string
 		if err := json.Unmarshal([]byte(f.VersionIds), &versionIds); err != nil {
@@ -96,6 +112,14 @@ func postApiV2LoraModelId(appCtx AppContext) func(ctx *gin.Context) {
 			for _, file := range modelVersion.Files {
 				if file.Type == "Model" {
 					downloadUrl = file.DownloadUrl
+					oldFilename := filepath.Join(appCtx.Config.ComfyuiLoraPath, file.Name)
+					if _, err := os.Stat(oldFilename); err == nil {
+						if err := os.Rename(oldFilename, filepath.Join(appCtx.Config.ComfyuiLoraPath, "remove-later", file.Name)); err != nil {
+							log.Printf("[WARNING] failed to move old model file: %v\n", err)
+						}
+					} else if !errors.Is(err, os.ErrNotExist) {
+						log.Printf("[WARNING] failed to stat old file: %v\n", err)
+					}
 					filename = fmt.Sprintf("%d-%d-%s", model.Id, modelVersion.Id, file.Name)
 					break
 				}
@@ -110,14 +134,14 @@ func postApiV2LoraModelId(appCtx AppContext) func(ctx *gin.Context) {
 			modelUrl := url.URL{
 				Scheme: "https",
 				Host:   "civitai.com",
-				Path:   path.Join("/", "models", strconv.Itoa(modelVersion.Id)),
+				Path:   path.Join("/", "models", strconv.Itoa(model.Id)),
 			}
 			q := modelUrl.Query()
 			q.Set("modelVersionId", strconv.Itoa(modelVersion.Id))
 			modelUrl.RawQuery = q.Encode()
 
-			stmt0 := "INSERT INTO lorasV2 ( name, url, civitaiModelId, civitaiVersionId, filename ) VALUES ( ?, ?, ?, ?, ? )"
-			result, err := tx.Exec(stmt0, model.Name, modelUrl.String(), model.Id, modelVersion.Id, filename)
+			stmt0 := "INSERT INTO lorasV2 ( name, version, url, civitaiModelId, civitaiVersionId, filename ) VALUES ( ?, ?, ?, ?, ?, ? )"
+			result, err := tx.Exec(stmt0, model.Name, modelVersion.Name, modelUrl.String(), model.Id, modelVersion.Id, filename)
 			if err != nil {
 				log.Printf("failed to insert lora v2 record: %v\n", err)
 				ctx.AbortWithStatus(http.StatusBadRequest)
@@ -156,6 +180,7 @@ func postApiV2LoraModelId(appCtx AppContext) func(ctx *gin.Context) {
 				ctx.AbortWithStatus(http.StatusBadRequest)
 				return
 			}
+
 			modelDownloadQueueItems = append(modelDownloadQueueItems, ModelDownloadQueueItem{
 				LoraId:      int(loraId),
 				ModelId:     model.Id,
@@ -164,9 +189,12 @@ func postApiV2LoraModelId(appCtx AppContext) func(ctx *gin.Context) {
 				Filename:    filename,
 			})
 
-			previewUrls := make([]string, min(2, len(modelVersion.Images)))
-			for index := 0; index < len(previewUrls); index += 1 {
-				previewUrls[index] = modelVersion.Images[index].Url
+			previewUrls := make([]string, 0, 2)
+			for index := 0; index < len(modelVersion.Images) && len(previewUrls) < 2; index += 1 {
+				if modelVersion.Images[index].Type == "video" {
+					continue
+				}
+				previewUrls = append(previewUrls, modelVersion.Images[index].Url)
 			}
 
 			for previewIndex, previewUrl := range previewUrls {
@@ -187,7 +215,7 @@ func postApiV2LoraModelId(appCtx AppContext) func(ctx *gin.Context) {
 					defer res.Body.Close()
 
 					if res.StatusCode < 200 || res.StatusCode >= 300 {
-						log.Printf("Civitai responded with %d for model image: %v\n", res.StatusCode)
+						log.Printf("Civitai responded with %d for model image\n", res.StatusCode)
 						log.Printf("Download image failed for: %v\n", modelVersion.Name)
 						return
 					}
@@ -432,6 +460,120 @@ func postApiCombination(appCtx AppContext) func(*gin.Context) {
 	}
 }
 
+func postApiV2Combination(appCtx AppContext) func(*gin.Context) {
+	return func(ctx *gin.Context) {
+		var f struct {
+			Ids       string `form:"ids"`
+			Strengths string `form:"strengths"`
+			Prompts   string `form:"prompts"`
+		}
+		if err := ctx.Bind(&f); err != nil {
+			log.Printf("failed to bind post combination form: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		var ids []int
+		var strengths []int
+		var prompts []string
+		if err := json.Unmarshal([]byte(f.Ids), &ids); err != nil {
+			log.Printf("failed to unmarshal ids into integer array: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if err := json.Unmarshal([]byte(f.Strengths), &strengths); err != nil {
+			log.Printf("failed to unmarshal strengths into integer array: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if err := json.Unmarshal([]byte(f.Prompts), &prompts); err != nil {
+			log.Printf("failed to unmarshal prompts into string array: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		abort := true
+		tx, err := appCtx.db.Begin()
+		if err != nil {
+			log.Printf("failed to start transaction: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		defer func() {
+			if abort {
+				tx.Rollback()
+			}
+		}()
+
+		stmt0Result, err := tx.Exec("INSERT INTO loraCombinationsV2 DEFAULT VALUES")
+		if err != nil {
+			log.Printf("failed to insert new lora combination: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		loraCombinationId, err := stmt0Result.LastInsertId()
+		if err != nil {
+			log.Printf("failed to get new lora combination ID: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		for index, loraId := range ids {
+			stmt1 := `INSERT INTO loraCombinationComponentsV2 ( loraCombinationId, loraId, seq, strength ) VALUES ( ?, ?, ?, ? )`
+			if _, err := tx.Exec(stmt1, loraCombinationId, loraId, index+1, strengths[index]); err != nil {
+				log.Printf("failed to insert lora combination component: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+		}
+
+		for index, prompt := range prompts {
+			stmt2 := `INSERT INTO loraCombinationPromptsV2 ( loraCombinationId, seq, prompt ) VALUES ( ?, ?, ? )`
+			if _, err := tx.Exec(stmt2, loraCombinationId, index+1, prompt); err != nil {
+				log.Printf("failed to insert lora combination prompt: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("failed to commit transaction: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		abort = false
+
+		defaultCheckpoint, err := queryDefaultCheckpoint(appCtx.db)
+		if err != nil {
+			log.Printf("failed to query default checkpoint: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if defaultCheckpoint == "" {
+			log.Printf("default checkpoint is not defined")
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		u := url.URL{
+			Scheme: "http",
+			Host:   appCtx.Config.ComfyuiEndpoint,
+			Path:   "/api/queue-combination",
+		}
+		q := u.Query()
+		q.Set("combinationId", strconv.Itoa(int(loraCombinationId)))
+		q.Set("checkpointFilename", defaultCheckpoint)
+		u.RawQuery = q.Encode()
+		if resp, err := http.Post(u.String(), "", nil); err != nil {
+			log.Printf("failed to enqueue sample image: %v", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if resp.StatusCode < 200 || resp.StatusCode > 300 {
+			log.Printf("ComfyUI responded with status: %d", resp.StatusCode)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		ctx.Status(http.StatusOK)
+	}
+}
+
 func postApiCombinationTest(appCtx AppContext) func(*gin.Context) {
 	return func(ctx *gin.Context) {
 		var f struct {
@@ -589,4 +731,134 @@ func postApiCombinationTest(appCtx AppContext) func(*gin.Context) {
 
 		ctx.Status(http.StatusOK)
 	}
+}
+
+func postApiV2RandomPromptAiBooru(appCtx AppContext) func(*gin.Context) {
+	return func(ctx *gin.Context) {
+		var q struct {
+			Id int `form:"id"`
+		}
+		if err := ctx.BindQuery(&q); err != nil {
+			log.Printf("failed to bind query parameters: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		u := url.URL{
+			Scheme: "https",
+			Host:   "aibooru.online",
+			Path:   fmt.Sprintf("/posts/%d.json", q.Id),
+		}
+
+		req, err := http.NewRequest("GET", u.String(), nil)
+		if err != nil {
+			log.Printf("failed to create HTTP request: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("failed to send HTTP request: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		defer res.Body.Close()
+
+		if res.StatusCode != 200 {
+			log.Printf("AI Booru responded with %d\n", res.StatusCode)
+			return
+		}
+
+		resBodyRaw, err := io.ReadAll(res.Body)
+		if err != nil {
+			log.Printf("failed to read response body: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		var resJson struct {
+			TagString string `json:"tag_string"`
+		}
+		if err := json.Unmarshal(resBodyRaw, &resJson); err != nil {
+			log.Printf("failed to unmarshal response: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		prompts := strings.Split(resJson.TagString, " ")
+
+		tx, err := appCtx.db.Begin()
+		if err != nil {
+			log.Printf("failed to start transaction: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		abort := true
+		defer func() {
+			if abort {
+				tx.Rollback()
+			}
+		}()
+
+		promptListId, err := insertRandomPromptsV2(tx, prompts)
+		if err != nil {
+			log.Printf("failed to insert random prompts: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		checkpointFilename, err := queryDefaultCheckpoint(tx)
+		if err != nil {
+			log.Printf("failed to query default checkpoint: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		combinationIds, err := queryLoraCombinationIds(tx)
+		if err != nil {
+			log.Printf("failed to query lora combination ids: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("failed to commit transaction: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		for _, combinationId := range combinationIds {
+			u := url.URL{
+				Scheme: "http",
+				Host:   appCtx.Config.ComfyuiEndpoint,
+				Path:   "/api/queue-combination-random-prompt",
+			}
+			q := u.Query()
+			q.Set("combinationId", strconv.Itoa(combinationId))
+			q.Set("checkpointFilename", checkpointFilename)
+			q.Set("promptId", strconv.Itoa(promptListId))
+			u.RawQuery = q.Encode()
+			req, err := http.NewRequest("POST", u.String(), nil)
+			if err != nil {
+				log.Printf("failed to create HTTP request: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Printf("failed to send HTTP request: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			} else if res.StatusCode != 200 {
+				log.Printf("Comfyui API responded with %d\n", res.StatusCode)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+		}
+
+		ctx.Status(200)
+	}
+
 }

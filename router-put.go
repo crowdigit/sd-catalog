@@ -14,9 +14,12 @@ func initPutRouters(engine *gin.Engine, appCtx AppContext) {
 }
 
 var putMappings = map[string]func(AppContext) func(*gin.Context){
-	"/api/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId/:sampleType":           putApiLoraLoraIdSampleImageCheckpointFilenamePromptListIdSampleType,
-	"/api/combination/:loraCombinationId/sampleImage/:checkpointFilename/:sampleType":       putApiCombinationLoraCombinationIdSampleImageCheckpointFilenameSampleType,
-	"/api/combination-test/:testId/sampleImage/:checkpointFilename/:trialIndex/:sampleType": putApiCombinationTestTestIdSampleImageCheckpointFilenameTrialIndexSampleType,
+	"/api/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId/:sampleType":                  putApiLoraLoraIdSampleImageCheckpointFilenamePromptListIdSampleType,
+	"/api/v2/lora/:loraId/sampleImage/:checkpointFilename/:promptlistId/:sampleType":               putApiV2LoraLoraIdSampleImageCheckpointFilenamePromptListIdSampleType,
+	"/api/combination/:loraCombinationId/sampleImage/:checkpointFilename/:sampleType":              putApiCombinationLoraCombinationIdSampleImageCheckpointFilenameSampleType,
+	"/api/v2/combination/:loraCombinationId/sampleImage/:checkpointFilename/:sampleType":           putApiV2CombinationLoraCombinationIdSampleImageCheckpointFilenameSampleType,
+	"/api/combination-test/:testId/sampleImage/:checkpointFilename/:trialIndex/:sampleType":        putApiCombinationTestTestIdSampleImageCheckpointFilenameTrialIndexSampleType,
+	"/api/v2/combination/:loraCombinationId/random-prompt/:checkpointFilename/:randomPromptListId": putApiV2CombinationCombinationIdRandomPromptCheckpointFilenameRandomPromptListId,
 }
 
 func putApiLoraLoraIdSampleImageCheckpointFilenamePromptListIdSampleType(appCtx AppContext) func(*gin.Context) {
@@ -40,6 +43,35 @@ func putApiLoraLoraIdSampleImageCheckpointFilenamePromptListIdSampleType(appCtx 
 		}
 
 		if err := insertSampleImage(appCtx.db, u.LoraId, u.PromptListId, u.CheckpointFilename, u.SampleType, sampleImage); err != nil {
+			log.Printf("failed to insert new sample image row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		ctx.Status(http.StatusOK)
+	}
+}
+
+func putApiV2LoraLoraIdSampleImageCheckpointFilenamePromptListIdSampleType(appCtx AppContext) func(*gin.Context) {
+	return func(ctx *gin.Context) {
+		var u struct {
+			LoraId             int    `uri:"loraId" binding:"required"`
+			PromptListId       int    `uri:"promptlistId" binding:"required"`
+			CheckpointFilename string `uri:"checkpointFilename" binding:"required"`
+			SampleType         int    `uri:"sampleType" binding:"required"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		sampleImage, err := readFormFile(ctx, "sampleimage")
+		if err != nil {
+			log.Printf("failed to read form file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		if err := insertSampleImageV2(appCtx.db, u.LoraId, u.PromptListId, u.CheckpointFilename, u.SampleType, sampleImage); err != nil {
 			log.Printf("failed to insert new sample image row: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
@@ -74,6 +106,37 @@ func putApiCombinationLoraCombinationIdSampleImageCheckpointFilenameSampleType(a
 	}
 }
 
+func putApiV2CombinationLoraCombinationIdSampleImageCheckpointFilenameSampleType(appCtx AppContext) func(*gin.Context) {
+	return func(ctx *gin.Context) {
+		var u struct {
+			LoraCombinationId  int    `uri:"loraCombinationId" binding:"required"`
+			CheckpointFilename string `uri:"checkpointFilename" binding:"required"`
+			SampleType         int    `uri:"sampleType" binding:"required"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameters: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		sampleImage, err := readFormFile(ctx, "sampleimage")
+		if err != nil {
+			log.Printf("failed to read form file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		stmt := `INSERT INTO loraCombinationSampleImagesV2 ( loraCombinationId, checkpointFilename, sampleType, sampleImage ) VALUES ( ?, ?, ?, ? )`
+
+		if _, err := appCtx.db.Exec(stmt, u.LoraCombinationId, u.CheckpointFilename, u.SampleType, sampleImage); err != nil {
+			log.Printf("failed to insert new sample image row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		ctx.Status(http.StatusOK)
+	}
+}
+
 func putApiCombinationTestTestIdSampleImageCheckpointFilenameTrialIndexSampleType(appCtx AppContext) func(*gin.Context) {
 	return func(ctx *gin.Context) {
 		var u struct {
@@ -97,7 +160,7 @@ func putApiCombinationTestTestIdSampleImageCheckpointFilenameTrialIndexSampleTyp
 
 		stmt := `INSERT INTO loraCombinationTestTrialSampleImages ( loraCombinationTestId, trialIndex, checkpointFilename, sampleType, sampleImage ) VALUES ( ?, ?, ?, ?, ? )`
 		if _, err := appCtx.db.Exec(stmt, u.TestId, u.TrialIndex, u.CheckpointFilename, u.SampleType, sampleImage); err != nil {
-			log.Printf("failed to insert new sample image row: %v\n", err)
+			log.Printf("failed to insert new random prompts image row: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
@@ -127,6 +190,37 @@ func putApiCheckpointFilename(appCtx AppContext) func(*gin.Context) {
 
 		if err := insertCheckpoint(appCtx.db, u.Filename, q.Name, q.Version); err != nil {
 			log.Printf("failed to insert checkpoint row: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		ctx.Status(http.StatusOK)
+	}
+}
+
+func putApiV2CombinationCombinationIdRandomPromptCheckpointFilenameRandomPromptListId(appCtx AppContext) func(*gin.Context) {
+	return func(ctx *gin.Context) {
+		var u struct {
+			CombinationId      int    `uri:"loraCombinationId" binding:"required"`
+			CheckpointFilename string `uri:"checkpointFilename" binding:"required"`
+			RandomPromptListId int    `uri:"randomPromptListId" binding:"required"`
+		}
+		if err := ctx.BindUri(&u); err != nil {
+			log.Printf("failed to bind uri parameter: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		sampleImage, err := readFormFile(ctx, "sampleimage")
+		if err != nil {
+			log.Printf("failed to read form file: %v\n", err)
+			ctx.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+
+		stmt := `INSERT INTO loraCombinationRandomPromptImagesV2 ( loraCombinationId, checkpointFilename, randomPromptListId, image ) VALUES ( ?, ?, ?, ? )`
+		if _, err := appCtx.db.Exec(stmt, u.CombinationId, u.CheckpointFilename, u.RandomPromptListId, sampleImage); err != nil {
+			log.Printf("failed to insert new sample image row: %v\n", err)
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
