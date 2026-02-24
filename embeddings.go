@@ -46,5 +46,11 @@ var testCombinationHtml string
 //go:embed html/submit-lora-v2.html
 var submitLoraV2Html string
 
+//go:embed html/submit-lora-v2-manual.html
+var submitLoraV2ManualHtml string
+
 //go:embed js/submit-lora-v2.js
 var submitLoraV2Js string
+
+//go:embed js/submit-lora-v2-manual.js
+var submitLoraManualV2Js string

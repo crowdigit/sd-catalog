@@ -2,15 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,11 +46,95 @@ type ModelDownloadQueueItem struct {
 	Filename    string
 }
 
+func handleManual(appCtx AppContext, ctx *gin.Context, modelId int, versionId int, promptLists [][]string, modelName string, versionName string, filename string) error {
+	abort := true
+	tx, err := appCtx.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to start sqlite transaction: %w", err)
+	}
+	defer func() {
+		if abort {
+			tx.Rollback()
+		}
+	}()
+
+	modelUrl := url.URL{
+		Scheme: "https",
+		Host:   "civitai.com",
+		Path:   path.Join("/", "models", strconv.Itoa(modelId)),
+	}
+	q := modelUrl.Query()
+	q.Set("modelVersionId", strconv.Itoa(versionId))
+	modelUrl.RawQuery = q.Encode()
+
+	stmt0 := "INSERT INTO lorasV2 ( name, version, url, civitaiModelId, civitaiVersionId, filename ) VALUES ( ?, ?, ?, ?, ?, ? )"
+	result, err := tx.Exec(stmt0, modelName, versionName, modelUrl.String(), modelId, versionId, filename)
+	if err != nil {
+		return fmt.Errorf("failed to insert lora v2 record: %w", err)
+	}
+
+	loraId, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get inserted lora record id: %w", err)
+	}
+
+	for promptListIndex, promptList := range promptLists {
+		stmt0 := "INSERT INTO promptListsV2 ( loraId, promptListId ) VALUES ( ?, ? )"
+		promptListId := promptListIndex + 1
+		if _, err := tx.Exec(stmt0, loraId, promptListId); err != nil {
+			return fmt.Errorf("failed to insert prompt list record: %w", err)
+		}
+
+		stmt1 := "INSERT INTO promptsV2 ( loraId, promptListId, seq, prompt ) VALUES ( ?, ?, ?, ? )"
+		for promptIndex, prompt := range promptList {
+			if _, err := tx.Exec(stmt1, loraId, promptListId, promptIndex+1, prompt); err != nil {
+				return fmt.Errorf("failed to insert prompt record: %w", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	abort = false
+
+	defaultCheckpoint, err := queryDefaultCheckpoint(appCtx.dbr)
+	if err != nil {
+		log.Printf("failed to query default checkpoint filename: %v\n", err)
+		log.Printf("failed to enqueue %d\n", loraId)
+		return nil
+	} else if defaultCheckpoint == "" {
+		log.Printf("default checkpoint is not defined\n")
+		log.Printf("failed to enqueue %d\n", loraId)
+		return nil
+	}
+
+	u := url.URL{
+		Scheme: "http",
+		Host:   appCtx.Config.ComfyuiEndpoint,
+		Path:   "/api/queue",
+	}
+	qq := u.Query()
+	qq.Set("loraId", strconv.Itoa(int(loraId)))
+	qq.Set("checkpointFilename", defaultCheckpoint)
+	u.RawQuery = qq.Encode()
+	if resp, err := http.Post(u.String(), "", nil); err != nil {
+		log.Printf("failed to enqueue sample image: %v", err)
+		log.Printf("failed to enqueue: %d\n", loraId)
+		return nil
+	} else if resp.StatusCode < 200 || resp.StatusCode > 300 {
+		log.Printf("ComfyUI responded with status: %d", resp.StatusCode)
+		log.Printf("failed to enqueue %d\n", loraId)
+		return nil
+	}
+
+	return nil
+}
+
 func postApiV2LoraModelId(appCtx AppContext) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		var u struct {
-			ModelId int `uri:"modelId" bind
-ing:"required"`
+			ModelId int `uri:"modelId" binding:"required"`
 		}
 		var f struct {
 			VersionIds  string `form:"versionIds" binding:"required"`
@@ -80,6 +161,15 @@ ing:"required"`
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
+		if ctx.Query("manual") != "" {
+			if err := handleManual(appCtx, ctx, u.ModelId, versionIds[0], promptLists[0], ctx.Query("modelName"), ctx.Query("versionName"), ctx.Query("filename")); err != nil {
+				log.Printf("failed to handle manual submission: %v\n", err)
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			ctx.Status(200)
+			return
+		}
 
 		model, err := getCivitaiModel(u.ModelId)
 		if err != nil {
@@ -101,6 +191,7 @@ ing:"required"`
 				tx.Rollback()
 			}
 		}()
+		previewDownloadQueueItems := make([]PreviewDownloadItem, 0, 2)
 		for _, modelVersion := range model.ModelVersions {
 			versionIndex := slices.Index(versionIds, modelVersion.Id)
 			if versionIndex == -1 {
@@ -112,14 +203,6 @@ ing:"required"`
 			for _, file := range modelVersion.Files {
 				if file.Type == "Model" {
 					downloadUrl = file.DownloadUrl
-					oldFilename := filepath.Join(appCtx.Config.ComfyuiLoraPath, file.Name)
-					if _, err := os.Stat(oldFilename); err == nil {
-						if err := os.Rename(oldFilename, filepath.Join(appCtx.Config.ComfyuiLoraPath, "remove-later", file.Name)); err != nil {
-							log.Printf("[WARNING] failed to move old model file: %v\n", err)
-						}
-					} else if !errors.Is(err, os.ErrNotExist) {
-						log.Printf("[WARNING] failed to stat old file: %v\n", err)
-					}
 					filename = fmt.Sprintf("%d-%d-%s", model.Id, modelVersion.Id, file.Name)
 					break
 				}
@@ -189,58 +272,17 @@ ing:"required"`
 				Filename:    filename,
 			})
 
-			previewUrls := make([]string, 0, 2)
-			for index := 0; index < len(modelVersion.Images) && len(previewUrls) < 2; index += 1 {
+			count := 0
+			for index := 0; index < len(modelVersion.Images) && count < 2; index += 1 {
 				if modelVersion.Images[index].Type == "video" {
 					continue
 				}
-				previewUrls = append(previewUrls, modelVersion.Images[index].Url)
-			}
-
-			for previewIndex, previewUrl := range previewUrls {
-				func() {
-					req, err := http.NewRequest("GET", previewUrl, nil)
-					if err != nil {
-						log.Printf("failed to create request for model image: %v\n", err)
-						log.Printf("Download image failed for: %v\n", modelVersion.Name)
-						return
-					}
-
-					res, err := http.DefaultClient.Do(req)
-					if err != nil {
-						log.Printf("failed to send request for model image: %v\n", err)
-						log.Printf("Download image failed for: %v\n", modelVersion.Name)
-						return
-					}
-					defer res.Body.Close()
-
-					if res.StatusCode < 200 || res.StatusCode >= 300 {
-						log.Printf("Civitai responded with %d for model image\n", res.StatusCode)
-						log.Printf("Download image failed for: %v\n", modelVersion.Name)
-						return
-					}
-
-					imageType := res.Header.Get("Content-Type")
-					if imageType == "" {
-						log.Printf("Civitai responded with empty Content-Type header")
-						log.Printf("Download image failed for: %v\n", modelVersion.Name)
-						return
-					}
-
-					image, err := io.ReadAll(res.Body)
-					if err != nil {
-						log.Printf("failed to download image; %v\n", err)
-						log.Printf("Download image failed for: %v\n", modelVersion.Name)
-						return
-					}
-
-					stmt := "INSERT INTO previewV2 ( loraId, seq, image, type ) VALUES ( ?, ?, ?, ? )"
-					if _, err := tx.Exec(stmt, loraId, previewIndex+1, image, imageType); err != nil {
-						log.Printf("failed to insert preview image: %v\n", err)
-						log.Printf("Download image failed for: %v\n", modelVersion.Name)
-						return
-					}
-				}()
+				previewDownloadQueueItems = append(previewDownloadQueueItems, PreviewDownloadItem{
+					ImageUrl:   modelVersion.Images[index].Url,
+					LoraId:     int(loraId),
+					PreviewSeq: count + 1,
+				})
+				count += 1
 			}
 		}
 		if err := tx.Commit(); err != nil {
@@ -249,9 +291,14 @@ ing:"required"`
 			return
 		}
 		abort = false
-		for _, item := range modelDownloadQueueItems {
-			chModelDownloadQueue <- item
-		}
+		go func() {
+			for _, item := range modelDownloadQueueItems {
+				chModelDownloadQueue <- item
+			}
+			for _, item := range previewDownloadQueueItems {
+				chPreviewDownloadQueue <- item
+			}
+		}()
 	}
 }
 

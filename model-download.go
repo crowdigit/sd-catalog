@@ -171,3 +171,77 @@ func downloadModelRoutine(
 	}
 	close(chStoppedNotify)
 }
+
+type PreviewDownloadItem struct {
+	ImageUrl   string
+	LoraId     int
+	PreviewSeq int
+}
+
+var chPreviewDownloadQueue = make(chan PreviewDownloadItem, 400)
+
+func downloadPreviewRoutineImpl(appCtx AppContext, item PreviewDownloadItem) (bool, error) {
+	req, err := http.NewRequest("GET", item.ImageUrl, nil)
+	if err != nil {
+		return true, fmt.Errorf("failed to create request for lora %d preview: %w", item.LoraId, err)
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return true, fmt.Errorf("failed to send request for lora %d preview: %w", item.LoraId, err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return true, fmt.Errorf("Civitai responded with %d for lora %d preview", res.StatusCode, item.LoraId)
+	}
+
+	imageType := res.Header.Get("Content-Type")
+	if imageType == "" {
+		return true, fmt.Errorf("Civitai responded with empty Content-Type header for lora %d preview", item.LoraId)
+	}
+
+	image, err := io.ReadAll(res.Body)
+	if err != nil {
+		return true, fmt.Errorf("failed to download preview for lora %d: %w", item.LoraId, err)
+	}
+
+	stmt := "INSERT INTO previewV2 ( loraId, seq, image, type ) VALUES ( ?, ?, ?, ? )"
+	if _, err := appCtx.db.Exec(stmt, item.LoraId, item.PreviewSeq, image, imageType); err != nil {
+		return true, fmt.Errorf("failed to insert preview image for lora %d: %w", item.LoraId, err)
+	}
+
+	return false, nil
+}
+
+func downloadPreviewRoutine(
+	appCtx AppContext,
+	chDownloadQueue <-chan PreviewDownloadItem,
+	chStopNotify <-chan struct{},
+	chStoppedNotify chan<- struct{}) {
+	for loop := true; loop; {
+		select {
+		case item := <-chDownloadQueue:
+			failed := true
+			var lastError error
+			for retry := 0; retry < 5; {
+				if retry, err := downloadPreviewRoutineImpl(appCtx, item); err != nil {
+					lastError = err
+					if retry {
+						continue
+					} else {
+						break
+					}
+				}
+				failed = false
+				break
+			}
+			if failed {
+				log.Printf("failed to download preview image: %v\n", lastError)
+			}
+		case <-chStopNotify:
+			loop = false
+		}
+	}
+	close(chStoppedNotify)
+}

@@ -28,6 +28,7 @@ func initGetRouters(engine *gin.Engine, appCtx AppContext) {
 var getMappings = map[string]func(AppContext) func(*gin.Context){
 	"/":                                     getIndex,
 	"/v2/submit-lora":                       getSubmitLoraV2,
+	"/v2/submit-lora-manual":                getSubmitLoraManualV2,
 	"/v2/submit-lora-combination":           getSubmitLoraCombinationV2,
 	"/submit-checkpoint":                    getSubmitCheckpoint,
 	"/browse-lora":                          getBrowseLora,
@@ -1102,6 +1103,13 @@ func getSubmitLoraV2(appCtx AppContext) func(ctx *gin.Context) {
 	}
 }
 
+func getSubmitLoraManualV2(appCtx AppContext) func(ctx *gin.Context) {
+	return func(ctx *gin.Context) {
+		ctx.Header("Content-Type", "text/html")
+		ctx.String(http.StatusOK, appCtx.htmlTemplates.submitLoraV2ManualHtml)
+	}
+}
+
 func getCivitaiModel(modelId int) (CivitaiGetModelResponse, error) {
 	if cachedRes, cached := getModelResCache[modelId]; cached {
 		return cachedRes, nil
@@ -1133,7 +1141,7 @@ func getCivitaiModel(modelId int) (CivitaiGetModelResponse, error) {
 	if err := json.Unmarshal(getModelRespBody, &model); err != nil {
 		return CivitaiGetModelResponse{}, fmt.Errorf("failed to parse response body from civitai: %w", err)
 	}
-
+	getModelResCache[modelId] = model
 	return model, nil
 }
 

@@ -20,11 +20,12 @@ import (
 )
 
 type AppContextHtmlTemplates struct {
-	loraHtml          *template.Template
-	loraHtmlV2        *template.Template
-	combinationHtml   *template.Template
-	combinationV2Html *template.Template
-	submitLoraV2Html  string
+	loraHtml               *template.Template
+	loraHtmlV2             *template.Template
+	combinationHtml        *template.Template
+	combinationV2Html      *template.Template
+	submitLoraV2Html       string
+	submitLoraV2ManualHtml string
 }
 
 type DB interface {
@@ -124,7 +125,22 @@ func main() {
 		appCtx.htmlTemplates.submitLoraV2Html = buffer.String()
 	}
 
+	if submitLoraV2ManualHtml, err := textTemplate.New("submit lora v2").Parse(submitLoraV2ManualHtml); err != nil {
+		log.Fatalf("failed to parse submit lora v2 html template: %v\n", err)
+	} else {
+		var buffer bytes.Buffer
+		if err := submitLoraV2ManualHtml.Execute(&buffer, struct {
+			SubmitLoraV2Script0 string
+		}{
+			SubmitLoraV2Script0: submitLoraManualV2Js,
+		}); err != nil {
+			log.Fatalf("failed to execute submit lora v2 html template: %v\n", err)
+		}
+		appCtx.htmlTemplates.submitLoraV2ManualHtml = buffer.String()
+	}
+
 	router := gin.Default()
+	// pprof.Register(router)
 	initGetRouters(router, appCtx)
 	initPutRouters(router, appCtx)
 	initPostRouters(router, appCtx)
@@ -135,9 +151,11 @@ func main() {
 		Handler: router.Handler(),
 	}
 
-	chStopped := make(chan struct{})
+	chStoppedModel := make(chan struct{})
+	chStoppedPreview := make(chan struct{})
 	chStop := make(chan struct{})
-	go downloadModelRoutine(appCtx, chModelDownloadQueue, chStop, chStopped)
+	go downloadModelRoutine(appCtx, chModelDownloadQueue, chStop, chStoppedModel)
+	go downloadPreviewRoutine(appCtx, chPreviewDownloadQueue, chStop, chStoppedPreview)
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -155,5 +173,5 @@ func main() {
 	}
 
 	close(chStop)
-	<-chStopped
+	<-chStoppedModel
 }

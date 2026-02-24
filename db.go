@@ -1007,57 +1007,6 @@ AND loraCombinationSampleImagesV2.sampleType = ?;`
 }
 
 func initDB(db DB) error {
-	stmt1 := `CREATE TABLE IF NOT EXISTS
-loras (
-    loraId INTEGER PRIMARY KEY ASC AUTOINCREMENT,
-    name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    urlpreview BLOB NOT NULL,
-    version TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    UNIQUE ( url, version ) ON CONFLICT FAIL,
-    UNIQUE ( filename ) ON CONFLICT FAIL,
-    CHECK ( version <> "" AND filename <> "")
-)`
-	if _, err := db.Exec(stmt1); err != nil {
-		return fmt.Errorf("failed to execute create loras table statement: %w", err)
-	}
-
-	stmt2 := `CREATE TABLE IF NOT EXISTS
-promptLists (
-    loraId REFERENCES loras ( loraId ) ON DELETE CASCADE,
-    promptListId INTEGER NOT NULL,
-    UNIQUE ( loraId, promptListId ) ON CONFLICT FAIL
-)`
-	if _, err := db.Exec(stmt2); err != nil {
-		return fmt.Errorf("failed to execute create prompt lists table statement: %w", err)
-	}
-
-	stmt3 := `CREATE TABLE IF NOT EXISTS
-prompts (
-    loraId INTEGER NOT NULL,
-    promptListId INTEGER NOT NULL,
-    seq INTEGER NOT NULL,
-    prompt TEXT NOT NULL,
-    FOREIGN KEY ( loraId, promptListId ) REFERENCES promptLists ( loraId, promptListId ) ON DELETE CASCADE,
-    UNIQUE ( loraId, promptListId, seq ) ON CONFLICT FAIL,
-    CHECK ( prompt <> "")
-)`
-	if _, err := db.Exec(stmt3); err != nil {
-		return fmt.Errorf("failed to execute create prompts table statement: %w", err)
-	}
-
-	stmt4 := `CREATE TABLE IF NOT EXISTS
-tags (
-    loraId INTEGER REFERENCES loras ( loraId ) ON DELETE CASCADE,
-    tag TEXT NOT NULL,
-    UNIQUE ( loraId, tag ) ON CONFLICT IGNORE,
-    CHECK ( tag <> "")
-)`
-	if _, err := db.Exec(stmt4); err != nil {
-		return fmt.Errorf("failed to execute create tags table statement: %w", err)
-	}
-
 	stmt5 := `CREATE TABLE IF NOT EXISTS
 checkpoints (
     checkpointFilename TEXT PRIMARY KEY,
@@ -1067,21 +1016,6 @@ checkpoints (
 )`
 	if _, err := db.Exec(stmt5); err != nil {
 		return fmt.Errorf("failed to create checkpoint table: %w", err)
-	}
-
-	stmt6 := `CREATE TABLE IF NOT EXISTS
-sampleImages (
-    loraId INTEGER NOT NULL,
-    promptListId INTEGER NOT NULL,
-    checkpointFilename TEXT NOT NULL,
-    sampleType INTEGER NOT NULL,
-    sampleImage BLOB NOT NULL,
-    FOREIGN KEY ( loraId, promptListId ) REFERENCES promptLists ( loraId, promptListId ) ON DELETE CASCADE,
-    FOREIGN KEY ( checkpointFilename ) REFERENCES checkpoints ( checkpointFilename ) ON DELETE CASCADE,
-    UNIQUE ( loraId, promptListId, checkpointFilename, sampleType ) ON CONFLICT REPLACE
-)`
-	if _, err := db.Exec(stmt6); err != nil {
-		return fmt.Errorf("failed to execute create sample images table statement: %w", err)
 	}
 
 	stmt7 := `CREATE TABLE IF NOT EXISTS
@@ -1099,50 +1033,6 @@ defaultSampleType (
 )`
 	if _, err := db.Exec(stmt8); err != nil {
 		return fmt.Errorf("failed to create default sample type type: %v\n", err)
-	}
-
-	stmt9 := `CREATE TABLE IF NOT EXISTS
-loraCombinations (
-	loraCombinationId INTEGER PRIMARY KEY ASC AUTOINCREMENT
-)`
-	if _, err := db.Exec(stmt9); err != nil {
-		return fmt.Errorf("failed to create lora combination table: %v\n", err)
-	}
-
-	stmt10 := `CREATE TABLE IF NOT EXISTS
-loraCombinationComponents (
-	loraCombinationId REFERENCES loraCombinations ( loraCombinationId ) ON DELETE CASCADE,
-	loraId REFERENCES loras ( loraId ) ON DELETE CASCADE,
-	seq INTEGER NOT NULL,
-	strength INTEGER NOT NULL,
-	UNIQUE ( loraCombinationId, loraId, seq ) ON CONFLICT FAIL
-)`
-	if _, err := db.Exec(stmt10); err != nil {
-		return fmt.Errorf("failed to create lora combination table: %v\n", err)
-	}
-
-	stmt11 := `CREATE TABLE IF NOT EXISTS
-loraCombinationSampleImages (
-	loraCombinationId REFERENCES loraCombinations ( loraCombinationId ) ON DELETE CASCADE,
-	checkpointFilename REFERENCES checkpoints ( checkpointFilename ) ON DELETE CASCADE,
-	sampleType INTEGER NOT NULL,
-	sampleImage BLOB NOT NULL,
-	UNIQUE ( loraCombinationId, checkpointFilename, sampleType ) ON CONFLICT REPLACE
-)`
-	if _, err := db.Exec(stmt11); err != nil {
-		return fmt.Errorf("failed to create lora combination table: %v\n", err)
-	}
-
-	stmt12 := `CREATE TABLE IF NOT EXISTS
-loraCombinationPrompts (
-	loraCombinationId REFERENCES loraCombinations ( loraCombinationId ) ON DELETE CASCADE,
-	seq INTEGER NOT NULL,
-	prompt TEXT NOT NULL,
-	UNIQUE ( loraCombinationId, seq ) ON CONFLICT FAIL,
-	CHECK ( prompt <> "" )
-)`
-	if _, err := db.Exec(stmt12); err != nil {
-		return fmt.Errorf("failed to create lora combination table: %v\n", err)
 	}
 
 	stmt13 := `CREATE TABLE IF NOT EXISTS
